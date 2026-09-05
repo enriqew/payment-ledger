@@ -1,0 +1,27 @@
+# secrets: the webhook signing secret rotates per `stripe listen` session
+.env
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# local stack state
+warehouse/
+data/minio/
+logs/
+spark-warehouse/
+metastore_db/
+derby.log
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
+# editors
+.idea/
+.vscode/

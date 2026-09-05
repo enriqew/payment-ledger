@@ -1,0 +1,67 @@
+COMPOSE := docker compose -f docker/docker-compose.yml
+PY      := .venv/Scripts/python.exe
+ifeq ($(wildcard $(PY)),)
+PY      := .venv/bin/python
+endif
+
+.DEFAULT_GOAL := help
+
+.PHONY: help
+help:  ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+
+.PHONY: install
+install:  ## Create the host venv and install dev extras
+	python -m venv .venv
+	$(PY) -m pip install --quiet --upgrade pip
+	$(PY) -m pip install --quiet -e ".[dev]"
+	@echo "ok. next: cp .env.example .env"
+
+.PHONY: up
+up:  ## Start kafka, minio and the iceberg rest catalog
+	$(COMPOSE) up -d
+	@echo "minio console: http://localhost:9001 (minioadmin / minioadmin)"
+
+.PHONY: down
+down:  ## Stop the stack, keeping volumes
+	$(COMPOSE) down
+
+.PHONY: clean
+clean:  ## Stop the stack and drop its volumes
+	$(COMPOSE) down -v
+
+.PHONY: ps
+ps:  ## Show container status
+	$(COMPOSE) ps
+
+.PHONY: logs
+logs:  ## Follow stack logs
+	$(COMPOSE) logs -f
+
+.PHONY: capture
+capture:  ## Run the webhook receiver (needs `stripe listen` in another terminal)
+	$(PY) -m payment_ledger.capture
+
+.PHONY: trigger
+trigger:  ## Make the sandbox emit the event types the ledger is built from
+	@echo "triggering the charge lifecycle. disputes resolve asynchronously,"
+	@echo "so leave the receiver running after this finishes."
+	stripe trigger charge.succeeded
+	stripe trigger charge.refunded
+	stripe trigger charge.dispute.created
+	stripe trigger charge.dispute.closed
+	stripe trigger payout.paid
+	stripe trigger payout.failed
+
+.PHONY: fixtures
+fixtures:  ## Count what has been captured so far, by event type
+	@find fixtures/events -name '*.json' -printf '%h\n' 2>/dev/null | sort | uniq -c | sort -rn || echo "nothing captured yet"
+
+.PHONY: test
+test:  ## Run the tests
+	$(PY) -m pytest
+
+.PHONY: lint
+lint:  ## Lint and format-check
+	$(PY) -m ruff check .
+	$(PY) -m ruff format --check .

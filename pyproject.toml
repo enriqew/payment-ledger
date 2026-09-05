@@ -1,0 +1,45 @@
+[project]
+name = "payment-ledger"
+version = "0.1.0"
+description = "A reconciliation pipeline for payment events: webhook stream to double-entry ledger, weighed against the processor's own reported balance."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "Enrique Redonda", email = "enrique@eredonda.com" }]
+
+# Phase 0 runs on the standard library alone. Capturing real payloads must never be blocked on
+# installing anything, so the receiver and its signature verification have no dependencies.
+dependencies = []
+
+[project.optional-dependencies]
+# Phase 1 onward. Split so `make install` stays fast until the stack is actually needed.
+pipeline = [
+  "confluent-kafka>=2.6",
+  "pyiceberg[s3fs]>=0.8",
+]
+dev = [
+  "pytest>=8.3",
+  "ruff>=0.7",
+]
+
+[project.scripts]
+payment-ledger-capture = "payment_ledger.capture:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM"]
