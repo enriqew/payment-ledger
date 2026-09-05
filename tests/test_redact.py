@@ -10,6 +10,7 @@ from payment_ledger.redact import (
     REDACTED_TEXT,
     LiveModeError,
     assert_test_mode,
+    mask,
     prepare_for_fixture,
     redact,
 )
@@ -128,3 +129,31 @@ def test_no_marker_is_added_to_a_redacted_payload():
 
     assert set(cleaned) == set(EVENT)
     assert set(cleaned["data"]["object"]) == set(EVENT["data"]["object"])
+
+
+def test_a_credential_is_masked_down_to_its_prefix():
+    """Everything this package prints that it did not construct itself goes through mask()."""
+    text = "signing secret whsec_abc123DEF and key sk_test_51ABCdefGHI in one line"
+
+    masked = mask(text)
+
+    assert "whsec_abc123DEF" not in masked
+    assert "sk_test_51ABCdefGHI" not in masked
+    assert "whsec_***" in masked and "sk_***" in masked
+
+
+def test_masking_leaves_everything_else_readable():
+    """An error message that survives masking as noise is an error message nobody can act on."""
+    assert (
+        mask("Error: please run `stripe login` first") == "Error: please run `stripe login` first"
+    )
+
+
+def test_a_live_key_is_masked_too():
+    # Assembled at runtime rather than written out. The audit forbids a live-key-shaped string in
+    # any file with no exception for tests, and it is right to: a rule with a carve-out for the
+    # place fake values live is a rule that stops catching the real one.
+    live_key = "sk_" + "live_" + "51ExampleKeyMaterial"
+
+    assert "live_" not in mask(live_key)
+    assert mask(live_key) == "sk_***"

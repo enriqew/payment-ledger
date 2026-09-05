@@ -169,44 +169,54 @@ Each is injected deliberately by the chaos module and each must be caught.
 
 ## 7. This repository is public
 
-Decided before the first payload was captured, which is the only cheap moment to decide it. Every
-consequence below is a constraint on the phases that follow, not a step at the end.
+Decided before the first payload was captured, which is the only cheap moment to decide it.
 
-**It has to run for someone with no Stripe account.** That is what makes a public repository worth
-opening. The committed fixtures and the generator are the default input; the live capture is an
-optional refresh. Nothing in phases 1 to 6 may require a network call to Stripe, which is what
-forces the anchor described in section 3 to be independent rather than external.
+**What is actually at risk is credentials, not data.** Worth stating plainly, because the two get
+conflated. The payloads here are mock: `stripe trigger` invents the charges, the card is 4242, the
+customers do not exist. Nothing in a fixture is worth stealing. What would matter is a secret key
+or a webhook signing secret reaching a public history, and that is undone by rotating the
+credential, not by deleting the commit. So the effort goes there.
 
-**A live payload cannot be committed, structurally.** `redact.py` refuses any payload carrying
-`livemode: true` at the point it would become a file. It is a refusal and not a clean-up: a live
-payload reaching the receiver means the CLI is authenticated somewhere it should not be, and
-silently sanitising it would hide the thing worth knowing.
+**No credential can enter the tree.** `scripts/audit_publishable.py` checks every tracked file for
+a key or a signing secret in any mode, with no exception for the files whose job is to hold fake
+values: a rule with a carve-out for the tests is a rule that stops catching the real thing. It also
+refuses a set of paths outright (`.env`, `*.pem`, `*.key`, `credentials`, `service-account*.json`,
+`dbt/profiles.yml`, `airflow.cfg`) checked against what git tracks rather than against
+`.gitignore`, which is a default and not a guarantee: `git add -f` ignores it, and so does a file
+committed before its rule existed. Most of those paths belong to phases 3 and 5, which is
+deliberate. The moment to refuse a credentials file is before one exists.
 
-**Test-mode payloads are still redacted.** They identify the sandbox account even though they grant
-no access to it. The account id is replaced, the receipt URL loses its path (that path is a token
-that opens the receipt for anyone holding it), and personal fields are blanked. Object ids,
-amounts, currencies, fees, timestamps and `request.idempotency_key` are never touched, because
-those are what the pipeline joins, sums and deduplicates on; a fixture with a redacted id would no
-longer test anything. Null stays null, so the shape stays honest.
+**No credential can be printed.** The signing secret is resolved from the CLI into memory and
+written nowhere. Every error path that echoes CLI output goes through `mask()` first, because
+`stripe listen --print-secret` is a command whose entire purpose is printing a credential, and the
+listener's own stdout goes to devnull. Neither the audit nor the test suite reports the text it
+matched. A secret in a CI log is in a worse place than the file it was found in.
 
-**The rules are one definition, applied three times.** They live in `payment_ledger.redact` and
-back the capture as it writes, a test over whatever is currently in `fixtures/`, and
-`scripts/audit_publishable.py`, which scans every tracked file. A rule that exists only in a review
-checklist is a rule that gets skipped on the day it matters. `make audit` and CI both fail on a
-finding, and neither ever prints the matched text: a secret in a CI log is in a worse place than
-the file it was found in.
+**Three enforcement points, in order of usefulness.** The pre-commit hook (`make hooks`) refuses
+the commit; CI refuses the push; `make audit` answers on demand. CI is the weakest of the three
+because it runs after the push has already happened.
 
-**Two scopes, because they are two risks.** A live credential is refused anywhere in the tree with
-no exceptions. An identifier of the sandbox account is refused in the payloads and allowed in the
-few files whose job is to show what one looks like, listed explicitly in the audit script so
-adding one is a visible decision.
+**It has to run with no Stripe account.** That is what makes a public repository worth opening.
+The committed fixtures and the generator are the default input; the live capture is an optional
+refresh, and no phase may require a network call to Stripe. This is what forces the anchor in
+section 3 to be independent rather than external.
+
+**Payload handling, which matters less.** A payload with `livemode: true` is refused at the point
+it would become a file rather than cleaned up, since it means the CLI is authenticated somewhere it
+should not be and sanitising that away hides it. Test payloads still have the account id, the
+receipt URL's token and personal fields replaced on write. That last part guards against little
+given the data is mock, and it is kept because it costs nothing and covers the day the CLI is
+pointed at a real account by mistake. Ids, amounts, currencies, fees, timestamps and
+`request.idempotency_key` are never touched: they are what the pipeline joins, sums and
+deduplicates on, and a fixture with a redacted id tests nothing. Null stays null and no marker key
+is added, so the envelopes stay genuine.
 
 **Not affiliated with Stripe.** The repository uses a public API in test mode and says so in the
 first paragraph of the README. Nothing here may read as official, endorsed or connected.
 
-**Every figure has a run behind it.** Carried over from section 8 and repeated here because a
-public repository is where an unverified number does real damage. No throughput and no latency
-number is published unless it came out of a measured run, with that run's configuration beside it.
+**Every figure has a run behind it.** Repeated from section 9 because a public repository is where
+an unverified number does real damage. No throughput and no latency figure is published unless it
+came out of a measured run, with that run's configuration beside it.
 
 ## 8. Roadmap
 

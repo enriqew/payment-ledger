@@ -1,0 +1,21 @@
+#!/bin/sh
+# Refuse a commit that would put a credential in the history.
+#
+# Installed by `make hooks`. CI runs the same audit, but CI runs after the push, and a secret that
+# reached a public history is not undone by deleting it: it is undone by rotating it. The cheap
+# place to catch one is here.
+#
+# `git commit --no-verify` skips this, which is fine. It is a guard against the ordinary mistake,
+# not against someone who has decided otherwise.
+
+set -e
+
+if [ -x .venv/Scripts/python.exe ]; then
+    PY=.venv/Scripts/python.exe
+elif [ -x .venv/bin/python ]; then
+    PY=.venv/bin/python
+else
+    PY=python
+fi
+
+"$PY" scripts/audit_publishable.py

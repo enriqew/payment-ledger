@@ -1,5 +1,20 @@
-# secrets: the webhook signing secret rotates per `stripe listen` session
+# Secrets. This repository is public, so the list is deliberately wider than what the project
+# uses today: the phases still to come add dbt profiles and Airflow connections, and the time to
+# ignore those is before the file exists, not after it has been committed once.
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials
+credentials.json
+service-account*.json
+dbt/profiles.yml
+airflow/airflow.cfg
+airflow/webserver_config.py
+.stripe/
 
 # a local copy of the stripe cli, so the capture runs without a system-wide install
 .tools/

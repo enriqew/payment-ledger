@@ -12,6 +12,10 @@ use to sign forwarded deliveries, without starting a listener, so the receiver c
 itself instead of the operator copying a `whsec_...` out of one terminal into a dotfile. Copying
 it by hand is how a receiver ends up verifying against a stale secret and rejecting every
 delivery for what looks like a signature bug.
+
+The secret is held in memory and written nowhere. Every error path below echoes the output of a
+command whose entire job is printing a credential, so all of it goes through `mask` first, and the
+listener's own stdout goes to devnull for the same reason.
 """
 
 from __future__ import annotations
@@ -22,6 +26,8 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+
+from payment_ledger.redact import mask
 
 log = logging.getLogger("stripe_cli")
 
@@ -83,7 +89,7 @@ def parse_secret(output: str) -> str:
     if not match:
         raise StripeCliError(
             "`stripe listen --print-secret` did not return a whsec_ secret. It printed:\n"
-            f"{output.strip() or '(nothing)'}\n"
+            f"{mask(output.strip()) or '(nothing)'}\n"
             "If that is a login prompt, run `make login` first."
         )
     return match.group(0)
@@ -108,7 +114,7 @@ def print_secret(timeout: int = 30) -> str:
     if completed.returncode != 0:
         raise StripeCliError(
             "`stripe listen --print-secret` failed:\n"
-            f"{(completed.stderr or completed.stdout).strip()}\n"
+            f"{mask((completed.stderr or completed.stdout).strip())}\n"
             "If it is asking for credentials, run `make login` first."
         )
 

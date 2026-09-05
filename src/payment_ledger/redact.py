@@ -80,6 +80,29 @@ FORBIDDEN_IN_PAYLOADS = {
 }
 
 
+# Everything that grants access, as opposed to merely identifying the sandbox. These are the ones
+# that matter: the payloads carry mock data, so an account id or a generated name leaks nothing
+# worth having, but a key or a signing secret is the same credential whatever mode it belongs to.
+CREDENTIAL_PATTERNS = (
+    re.compile(r"(sk|rk|pk)_(live|test)_[A-Za-z0-9]+"),
+    re.compile(r"whsec_[A-Za-z0-9_\-]+"),
+)
+
+
+def mask(text: str) -> str:
+    """Replace any credential in a string with its prefix and nothing else.
+
+    Used on everything this package prints that it did not construct itself, which in practice
+    means the CLI's own output. `stripe listen --print-secret` writes a signing secret to stdout,
+    so echoing that output into an error message is the most likely way a secret ends up in a
+    terminal scrollback or a CI log. Masking is applied even where the value is not expected to be
+    present, because the cases where it is present are exactly the cases nobody predicted.
+    """
+    for pattern in CREDENTIAL_PATTERNS:
+        text = pattern.sub(lambda m: f"{m.group(0).split('_')[0]}_***", text)
+    return text
+
+
 class LiveModeError(Exception):
     """A payload arrived with `livemode: true`. Test mode is the premise, so this is a hard stop."""
 

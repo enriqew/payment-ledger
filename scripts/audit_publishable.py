@@ -19,6 +19,7 @@ worse than the file it was found in, so the report names the file, the line and 
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +43,22 @@ PLACEHOLDER_ALLOWED = (
     # The author address is meant to be published: it is the identity on every commit here.
     "pyproject.toml",
     "LICENSE",
+)
+
+# Files that must never be tracked at all, whatever is inside them. `.gitignore` states the same
+# intent, but it is a default and not a guarantee: `git add -f` walks straight past it, and so does
+# a file that was added before its ignore rule existed. This list is checked against what git
+# actually tracks, which is the thing that gets pushed. Most of these belong to phases that have
+# not been built yet, which is the point: the moment to refuse a credentials file is before one
+# exists, not after it has been committed once.
+NEVER_TRACKED = (
+    re.compile(r"(^|/)\.env$"),
+    re.compile(r"(^|/)\.env\.(?!example$)"),
+    re.compile(r"\.(pem|key|p12|pfx)$"),
+    re.compile(r"(^|/)credentials(\.json)?$"),
+    re.compile(r"(^|/)service-account.*\.json$"),
+    re.compile(r"(^|/)profiles\.yml$"),
+    re.compile(r"(^|/)airflow\.cfg$"),
 )
 
 # Binary and generated files. Reading them as text produces noise, not findings.
@@ -90,15 +107,21 @@ def main() -> int:
 
     for path in files:
         relative = path.relative_to(REPO_ROOT).as_posix()
+
+        if any(pattern.search(relative) for pattern in NEVER_TRACKED):
+            findings.append((relative, 0, "a file that must never be tracked"))
+            continue
+
         findings += [(relative, number, name) for number, name in scan(path)]
 
     if not findings:
-        print(f"clean: {len(files)} tracked files, no credentials and no account identifiers")
+        print(f"clean: {len(files)} tracked files, no credentials, nothing that must not be here")
         return 0
 
     print(f"{len(findings)} finding(s). This repository is public; none of these may be pushed.\n")
     for relative, number, name in findings:
-        print(f"  {relative}:{number}  {name}")
+        where = f"{relative}:{number}" if number else relative
+        print(f"  {where}  {name}")
     return 1
 
 

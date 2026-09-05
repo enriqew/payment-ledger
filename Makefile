@@ -79,6 +79,12 @@ fixtures:  ## Count what has been captured so far, by event type
 audit:  ## Check the whole tree is safe to publish (no credentials, no account identifiers)
 	$(PY) scripts/audit_publishable.py
 
+.PHONY: hooks
+hooks:  ## Install the pre-commit hook that refuses a commit carrying a credential
+	cp scripts/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+	@echo "installed. bypass a single commit with --no-verify if you ever need to."
+
 .PHONY: check
 check: audit lint test  ## Everything CI runs
 

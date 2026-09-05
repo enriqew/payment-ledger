@@ -62,9 +62,12 @@ def resolve_webhook_secret() -> str:
     configured = _get("STRIPE_WEBHOOK_SECRET", "")
     if configured:
         if not configured.startswith("whsec_"):
+            # The value is never echoed, not even a prefix of it. Whatever it turns out to be, it
+            # was set in a variable meant to hold a credential, and the message is just as
+            # actionable without it.
             raise SystemExit(
-                f"STRIPE_WEBHOOK_SECRET is set to {configured[:8]}..., which is not a signing\n"
-                "secret. Unset it to let the CLI supply one, or set it to the whsec_... that\n"
+                "STRIPE_WEBHOOK_SECRET is set to something that is not a signing secret.\n"
+                "Unset it to let the CLI supply one, or set it to the whsec_... that\n"
                 "`stripe listen --print-secret` prints."
             )
         return configured

@@ -4,6 +4,11 @@ Real Stripe **test-mode** webhook payloads, captured from a sandbox account with
 They are committed so that cloning this repository is enough to run the pipeline: refreshing them
 needs an account, using them does not.
 
+**The data in them is mock.** `stripe trigger` invents the charges, the card is 4242, and the
+customers do not exist. The envelopes are genuine, the money is not. What actually needs protecting
+in this repository is credentials, which never appear in a payload at all; see the Publishing
+section of the root README.
+
 ```
 events/<event.type>/<event.id>.json
 ```
@@ -13,8 +18,10 @@ rewrites its own file instead of adding a second one.
 
 ## What has been changed, and what has not
 
-These are genuine envelopes, with two edits applied automatically as each file is written (see
-`src/payment_ledger/redact.py`):
+These are genuine envelopes, with a few edits applied automatically as each file is written (see
+`src/payment_ledger/redact.py`). None of them is guarding anything valuable, since the payloads are
+mock; they are kept because they cost nothing and they cover the day the CLI is pointed at a real
+account by mistake:
 
 | Field | What it becomes | Why |
 |---|---|---|

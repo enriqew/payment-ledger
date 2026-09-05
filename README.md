@@ -64,6 +64,15 @@ make down             # stop, keeping volumes; make clean drops them too
 
 `cp .env.example .env` only if you want to override a default. Nothing in it is required.
 
+**Without `make`** (Windows, mostly), every target is one line; `make help` lists them and the
+Makefile shows the command. The three that matter:
+
+```bash
+python -m venv .venv && .venv/Scripts/python.exe -m pip install -e ".[dev]"
+.venv/Scripts/python.exe scripts/audit_publishable.py && .venv/Scripts/python.exe -m pytest
+docker compose -f docker/docker-compose.yml up -d
+```
+
 Services appear in the stack with the phase that needs them, pinned when there is a job to run
 against them rather than guessed at in advance. Spark arrives in phase 1, Airflow in phase 5.
 
@@ -122,18 +131,36 @@ tests/
 
 ## Publishing
 
-This repository is public, and the payloads under `fixtures/` go to a public history where a
-mistake is permanent. Three things follow, all enforced rather than remembered:
+This repository is public. The payloads it commits are mock data from Stripe's test mode, so
+nothing in them is worth stealing; **the thing to protect is credentials**, and none of the
+following is left to memory.
 
-- A payload with `livemode: true` is **refused** at the point it would become a file, not cleaned
-  up. It means the CLI is authenticated somewhere it should not be, which is worth stopping over.
-- Test-mode payloads are redacted on write: the account id, the receipt URL's token and personal
-  fields go; ids, amounts, fees and `request.idempotency_key` stay, because those are what the
-  pipeline joins and deduplicates on. Details in [`fixtures/README.md`](fixtures/README.md).
-- `make audit` scans every tracked file against those same rules and fails on a finding, locally
-  and in CI. It never prints what it matched.
+**No credential can enter the tree.** `scripts/audit_publishable.py` checks every tracked file for
+a key or a signing secret, in any mode, with no exception for the files where fake values live: a
+rule with a carve-out for tests is a rule that stops catching the real one. It also refuses a set
+of *paths* outright, `.env` and `*.pem` and `dbt/profiles.yml` among them, checked against what git
+actually tracks rather than against `.gitignore`, since `git add -f` walks straight past an ignore
+rule. Most of those paths belong to phases not built yet, which is the point: the moment to refuse
+a credentials file is before one exists.
 
-The reasoning is in [`docs/DESIGN.md`](docs/DESIGN.md), section 7.
+**No credential can be printed.** The signing secret is held in memory and written nowhere. Every
+error path that echoes output from the Stripe CLI, a command whose whole job is printing a
+credential, runs it through `mask()` first, and the listener's own stdout goes to devnull. The
+audit never prints what it matched either: a secret in a CI log is somewhere worse than the file it
+came from.
+
+**Three places, one moment each.** The pre-commit hook (`make hooks`) refuses the commit, CI
+refuses the push, and `make audit` answers the question on demand. CI matters least of the three:
+it runs after the push, and a secret that reached a public history is not undone by deleting it,
+it is undone by rotating it.
+
+Secondary, since the data is mock either way: a payload arriving with `livemode: true` is refused
+rather than cleaned up, because it means the CLI is authenticated somewhere it should not be. Test
+payloads still have the account id, the receipt URL's token and personal fields replaced on write,
+while ids, amounts, fees and `request.idempotency_key` are left alone, since those are what the
+pipeline joins and deduplicates on. See [`fixtures/README.md`](fixtures/README.md).
+
+Reasoning in [`docs/DESIGN.md`](docs/DESIGN.md), section 7.
 
 ## Licence
 
