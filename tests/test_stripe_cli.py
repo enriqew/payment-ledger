@@ -7,7 +7,7 @@ import pytest
 from payment_ledger import stripe_cli
 from payment_ledger.stripe_cli import StripeCliError, find_cli, parse_secret
 
-SECRET = "whsec_1a2b3c4d5e6f7g8h9i0j"
+SECRET = "whsec_example_not_a_real_secret"
 
 
 def test_secret_is_extracted_from_a_noisy_banner():

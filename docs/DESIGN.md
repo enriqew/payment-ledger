@@ -75,15 +75,36 @@ reconciliation. Defensibility is.
 `stripe listen --forward-to localhost:4242/webhooks` plus `stripe trigger <event>` yields genuine
 event envelopes for `charge.succeeded`, `charge.refunded`, `charge.dispute.created`,
 `charge.dispute.closed`, `payout.paid`, `payout.failed` and `balance.available`. Those captures are
-committed under `fixtures/events/` and are the ground truth for every schema downstream.
+committed under `fixtures/events/`, redacted as section 9 describes, and are the ground truth for
+every schema downstream. They are committed precisely so that cloning the repository is enough:
+the capture refreshes them and needs an account, running the pipeline does not.
 
 **Volume comes from a generator.** `stripe trigger` yields a handful of events, not a stream. The
 generator replays the captured shapes across a simulated calendar at configurable volume, with a
 chaos module that injects failures on demand. It is the only synthetic part of the system.
 
-**The reconciliation anchor is external.** The processor's own balance transaction list and
-`/v1/balance` are what the derived ledger is weighed against, so "correct" is not the pipeline
-agreeing with itself.
+**The reconciliation anchor is independent, not external.** This is the one place where the
+honest description is weaker than the appealing one, so it is worth being exact about.
+
+The live `/v1/balance` cannot be the anchor for a synthetic run. Once volume comes from a
+generator, the processor's real balance reflects a handful of triggered test events and nothing
+the generator produced, so comparing the two would fail for a reason that has nothing to do with
+the ledger. It also cannot be the anchor for a repository anyone can clone, because a stranger
+running this has no account of their own.
+
+So the generator emits two artifacts and keeps them apart: the event stream, and the processor's
+reported balance, computed by its own accounting from the same simulated calendar without
+consulting the pipeline. The ledger is weighed against that. The chaos module perturbs one side
+and not the other, which is what makes a divergence appear.
+
+What this design proves: that the reconciliation detects a divergence, attributes it to specific
+events, and refuses to close a day it cannot explain. What it does not prove: that the ledger
+agrees with Stripe's own books. No published figure may claim otherwise.
+
+The bridge back to something genuinely external is a separate, optional step for whoever does have
+an account: reconcile the small set of real captured events against the real `/v1/balance` and
+`/v1/balance_transactions`. It runs on demand, never in CI, and its result is reported as what it
+is, a check over a handful of events rather than over the generated volume.
 
 **The money movement primitive is `balance_transaction`, not `charge`.** Every charge, refund,
 dispute and payout carries one, with `amount`, `fee`, `fee_details[]`, `net`, `currency`, `status`
@@ -146,7 +167,48 @@ Each is injected deliberately by the chaos module and each must be caught.
 | Currency and rounding | Integer minor units end to end; FX and rounding drift accounted for, not absorbed |
 | Reversal | Signed postings; a won dispute returns the amount and keeps the fee |
 
-## 7. Roadmap
+## 7. This repository is public
+
+Decided before the first payload was captured, which is the only cheap moment to decide it. Every
+consequence below is a constraint on the phases that follow, not a step at the end.
+
+**It has to run for someone with no Stripe account.** That is what makes a public repository worth
+opening. The committed fixtures and the generator are the default input; the live capture is an
+optional refresh. Nothing in phases 1 to 6 may require a network call to Stripe, which is what
+forces the anchor described in section 3 to be independent rather than external.
+
+**A live payload cannot be committed, structurally.** `redact.py` refuses any payload carrying
+`livemode: true` at the point it would become a file. It is a refusal and not a clean-up: a live
+payload reaching the receiver means the CLI is authenticated somewhere it should not be, and
+silently sanitising it would hide the thing worth knowing.
+
+**Test-mode payloads are still redacted.** They identify the sandbox account even though they grant
+no access to it. The account id is replaced, the receipt URL loses its path (that path is a token
+that opens the receipt for anyone holding it), and personal fields are blanked. Object ids,
+amounts, currencies, fees, timestamps and `request.idempotency_key` are never touched, because
+those are what the pipeline joins, sums and deduplicates on; a fixture with a redacted id would no
+longer test anything. Null stays null, so the shape stays honest.
+
+**The rules are one definition, applied three times.** They live in `payment_ledger.redact` and
+back the capture as it writes, a test over whatever is currently in `fixtures/`, and
+`scripts/audit_publishable.py`, which scans every tracked file. A rule that exists only in a review
+checklist is a rule that gets skipped on the day it matters. `make audit` and CI both fail on a
+finding, and neither ever prints the matched text: a secret in a CI log is in a worse place than
+the file it was found in.
+
+**Two scopes, because they are two risks.** A live credential is refused anywhere in the tree with
+no exceptions. An identifier of the sandbox account is refused in the payloads and allowed in the
+few files whose job is to show what one looks like, listed explicitly in the audit script so
+adding one is a visible decision.
+
+**Not affiliated with Stripe.** The repository uses a public API in test mode and says so in the
+first paragraph of the README. Nothing here may read as official, endorsed or connected.
+
+**Every figure has a run behind it.** Carried over from section 8 and repeated here because a
+public repository is where an unverified number does real damage. No throughput and no latency
+number is published unless it came out of a measured run, with that run's configuration beside it.
+
+## 8. Roadmap
 
 | Phase | Deliverable | State |
 |---|---|---|
@@ -163,7 +225,7 @@ Services appear in `docker/docker-compose.yml` with the phase that needs them. K
 Iceberg REST catalog are there now; Spark arrives with phase 1 and Airflow with phase 5, pinned
 when there is a job to run against them.
 
-## 8. Reporting rules
+## 9. Reporting rules
 
 - Test mode and synthetic volume are stated wherever a figure is reported.
 - No throughput or latency number is published unless it came out of a real run, with that run's

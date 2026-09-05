@@ -75,6 +75,13 @@ trigger:  ## Make the sandbox emit the event types the ledger is built from
 fixtures:  ## Count what has been captured so far, by event type
 	@find fixtures/events -name '*.json' -printf '%h\n' 2>/dev/null | sort | uniq -c | sort -rn || echo "nothing captured yet"
 
+.PHONY: audit
+audit:  ## Check the whole tree is safe to publish (no credentials, no account identifiers)
+	$(PY) scripts/audit_publishable.py
+
+.PHONY: check
+check: audit lint test  ## Everything CI runs
+
 .PHONY: test
 test:  ## Run the tests
 	$(PY) -m pytest

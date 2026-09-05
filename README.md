@@ -1,13 +1,17 @@
 # Payment Ledger
 
+[![ci](https://github.com/enriqew/payment-ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/enriqew/payment-ledger/actions/workflows/ci.yml)
+
 A reconciliation pipeline for payment events. It consumes a payment processor's webhook stream,
 builds a double-entry ledger from it, and weighs that ledger against the balance the processor
 itself reports.
 
-**What this is not.** It does not process real payments and it never touches real money or real
+**What this is not.** It is not affiliated with, endorsed by or connected to Stripe; it uses a
+public API in test mode. It does not process real payments and it never touches real money or real
 customer data. Event *schemas* come from Stripe's **test mode**, captured with the Stripe CLI
-against a sandbox account. Event *volume* comes from a generator that replays those captured shapes
-across a simulated calendar. Both halves are stated wherever a number is reported.
+against a sandbox account and redacted before they are committed. Event *volume* comes from a
+generator that replays those captured shapes across a simulated calendar. Both halves are stated
+wherever a number is reported.
 
 The subject of the project is not throughput. It is the six failures that make money hard, each one
 injected deliberately and each one caught:
@@ -46,14 +50,19 @@ full run costs nothing and there is no always-on service.
 
 ## Quick start
 
+**No Stripe account is needed to run this.** The captured payloads are committed and the generator
+produces the volume, so a clone is enough. An account is needed only to refresh the fixtures.
+
 ```bash
-make install          # host venv for the capture receiver, generator and tests
-cp .env.example .env  # then fill in STRIPE_WEBHOOK_SECRET, see below
+make install          # host venv for the receiver, the generator and the tests
+make check            # audit, lint and tests, the same three CI runs
 
 make up               # kafka, minio, iceberg rest catalog
 make ps               # check everything is healthy
 make down             # stop, keeping volumes; make clean drops them too
 ```
+
+`cp .env.example .env` only if you want to override a default. Nothing in it is required.
 
 Services appear in the stack with the phase that needs them, pinned when there is a job to run
 against them rather than guessed at in advance. Spark arrives in phase 1, Airflow in phase 5.
@@ -100,13 +109,31 @@ src/payment_ledger/
   webhook.py       Stripe-Signature parsing and verification (stdlib hmac)
   stripe_cli.py    finding the cli, its signing secret, and the listener subprocess
   capture.py       the receiver: verify, write fixture, log
+  redact.py        what may be committed: the live-mode guard and the redaction rules
+scripts/
+  audit_publishable.py   the same rules, over every tracked file
 docker/            the local stack
 conf/              spark defaults, iceberg catalog wiring
 dbt/               gold ledger models and the invariant tests   (phase 3)
 airflow/dags/      ledger_daily, ledger_chaos                   (phase 5)
-fixtures/events/   captured test-mode payloads, committed
+fixtures/events/   captured test-mode payloads, redacted and committed
 tests/
 ```
+
+## Publishing
+
+This repository is public, and the payloads under `fixtures/` go to a public history where a
+mistake is permanent. Three things follow, all enforced rather than remembered:
+
+- A payload with `livemode: true` is **refused** at the point it would become a file, not cleaned
+  up. It means the CLI is authenticated somewhere it should not be, which is worth stopping over.
+- Test-mode payloads are redacted on write: the account id, the receipt URL's token and personal
+  fields go; ids, amounts, fees and `request.idempotency_key` stay, because those are what the
+  pipeline joins and deduplicates on. Details in [`fixtures/README.md`](fixtures/README.md).
+- `make audit` scans every tracked file against those same rules and fails on a finding, locally
+  and in CI. It never prints what it matched.
+
+The reasoning is in [`docs/DESIGN.md`](docs/DESIGN.md), section 7.
 
 ## Licence
 

@@ -60,7 +60,13 @@ def resolve_webhook_secret() -> str:
     sign with by construction, which a hand-copied one is only until the next restart.
     """
     configured = _get("STRIPE_WEBHOOK_SECRET", "")
-    if configured and configured != "whsec_replace_me":
+    if configured:
+        if not configured.startswith("whsec_"):
+            raise SystemExit(
+                f"STRIPE_WEBHOOK_SECRET is set to {configured[:8]}..., which is not a signing\n"
+                "secret. Unset it to let the CLI supply one, or set it to the whsec_... that\n"
+                "`stripe listen --print-secret` prints."
+            )
         return configured
 
     from payment_ledger.stripe_cli import StripeCliError, print_secret

@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from payment_ledger.config import CaptureSettings
+from payment_ledger.redact import LiveModeError, prepare_for_fixture
 from payment_ledger.stripe_cli import spawn_listener
 from payment_ledger.webhook import SignatureError, verify
 
@@ -43,11 +44,20 @@ def fixture_path(root: Path, event_type: str, event_id: str) -> Path:
 
 
 def write_fixture(root: Path, event: dict) -> tuple[Path, bool]:
-    """Persist one event. Returns its path and whether it had already been captured."""
-    path = fixture_path(root, event.get("type", "unknown"), event.get("id", "unknown"))
+    """Persist one event. Returns its path and whether it had already been captured.
+
+    The payload is guarded and redacted before it is written, not after: these fixtures are
+    committed to a public repository, so the moment a payload becomes a file is the last point at
+    which "this must never be published" is still enforceable. See `redact.py`.
+    """
+    payload, was_redacted = prepare_for_fixture(event)
+    if was_redacted:
+        log.debug("redacted identifying fields from %s", event.get("id"))
+
+    path = fixture_path(root, payload.get("type", "unknown"), payload.get("id", "unknown"))
     already_seen = path.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(event, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path, already_seen
 
 
@@ -98,7 +108,15 @@ class CaptureHandler(BaseHTTPRequestHandler):
             self._respond(HTTPStatus.BAD_REQUEST, f"body is not json: {exc}")
             return
 
-        path, already_seen = write_fixture(self.settings.fixtures_dir, event)
+        try:
+            path, already_seen = write_fixture(self.settings.fixtures_dir, event)
+        except LiveModeError as exc:
+            # Loud and refused rather than dropped: a live payload reaching this receiver means
+            # the CLI is pointed somewhere it should not be, and that is worth stopping over.
+            log.error("%s", exc)
+            self._respond(HTTPStatus.BAD_REQUEST, "live mode payload refused")
+            return
+
         if already_seen:
             log.info(
                 "redelivery of %s (%s), fixture rewritten in place",

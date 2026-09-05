@@ -1,0 +1,38 @@
+# The repository is public, so CI answers the two questions a reader has: is it safe to publish,
+# and does it work. The audit runs first on purpose. A failing test is a bug; a payload that should
+# never have been committed is not something to find out about after the linter has had its turn.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Nothing publishable-unsafe in the tree
+        run: python scripts/audit_publishable.py
+
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Test
+        run: pytest

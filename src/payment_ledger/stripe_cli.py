@@ -28,7 +28,10 @@ log = logging.getLogger("stripe_cli")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VENDORED_DIR = REPO_ROOT / ".tools"
 
-SECRET_PATTERN = re.compile(r"whsec_[A-Za-z0-9]+")
+# Deliberately wider than the secrets Stripe is known to issue. Matching too narrowly would
+# silently truncate a secret at its first unexpected character, and a truncated secret fails
+# verification in exactly the way a wrong secret does.
+SECRET_PATTERN = re.compile(r"whsec_[A-Za-z0-9_\-]+")
 
 INSTALL_HINT = (
     "The Stripe CLI was not found.\n"
