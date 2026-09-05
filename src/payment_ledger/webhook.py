@@ -58,9 +58,7 @@ def parse_signature_header(header: str) -> SignatureHeader:
 
 def expected_signature(payload: bytes, timestamp: int, secret: str) -> str:
     signed_payload = str(timestamp).encode("utf-8") + b"." + payload
-    return hmac.new(
-        secret.encode("utf-8"), signed_payload, hashlib.sha256
-    ).hexdigest()
+    return hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
 
 
 def verify(

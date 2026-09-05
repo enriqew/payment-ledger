@@ -1,6 +1,9 @@
 # secrets: the webhook signing secret rotates per `stripe listen` session
 .env
 
+# a local copy of the stripe cli, so the capture runs without a system-wide install
+.tools/
+
 # python
 .venv/
 __pycache__/

@@ -45,6 +45,36 @@ def _get(key: str, default: str | None = None) -> str | None:
     return os.environ.get(key) or _FILE_ENV.get(key) or default
 
 
+def _flag(key: str, default: bool) -> bool:
+    raw = _get(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def resolve_webhook_secret() -> str:
+    """The signing secret, from the environment if set and from the CLI otherwise.
+
+    Configuration wins over the CLI so a fixed secret can be pinned (a test, a replay against a
+    recorded capture). Asking the CLI is the normal path: it is the same value the listener will
+    sign with by construction, which a hand-copied one is only until the next restart.
+    """
+    configured = _get("STRIPE_WEBHOOK_SECRET", "")
+    if configured and configured != "whsec_replace_me":
+        return configured
+
+    from payment_ledger.stripe_cli import StripeCliError, print_secret
+
+    try:
+        return print_secret()
+    except StripeCliError as exc:
+        raise SystemExit(
+            f"{exc}\n\n"
+            "Alternatively, run `stripe listen --forward-to localhost:4242/webhooks` yourself\n"
+            "and put the whsec_... it prints into .env as STRIPE_WEBHOOK_SECRET."
+        ) from exc
+
+
 @dataclass(frozen=True)
 class CaptureSettings:
     """Settings for the phase 0 webhook capture receiver."""
@@ -54,26 +84,19 @@ class CaptureSettings:
     port: int
     tolerance_seconds: int
     fixtures_dir: Path
+    spawn_listener: bool
 
     @classmethod
     def from_env(cls) -> CaptureSettings:
-        secret = _get("STRIPE_WEBHOOK_SECRET", "")
-        if not secret or secret == "whsec_replace_me":
-            raise SystemExit(
-                "STRIPE_WEBHOOK_SECRET is not set.\n"
-                "Run `stripe listen --forward-to localhost:4242/webhooks`, copy the whsec_... it\n"
-                "prints, and put it in .env. The secret is per listen session, so it changes\n"
-                "every time the CLI is restarted."
-            )
-
         fixtures = Path(_get("FIXTURES_DIR", "fixtures/events") or "fixtures/events")
         if not fixtures.is_absolute():
             fixtures = REPO_ROOT / fixtures
 
         return cls(
-            webhook_secret=secret,
+            webhook_secret=resolve_webhook_secret(),
             host=_get("CAPTURE_HOST", "127.0.0.1") or "127.0.0.1",
             port=int(_get("CAPTURE_PORT", "4242") or 4242),
             tolerance_seconds=int(_get("WEBHOOK_TOLERANCE_SECONDS", "300") or 300),
             fixtures_dir=fixtures,
+            spawn_listener=_flag("CAPTURE_SPAWN_LISTEN", True),
         )

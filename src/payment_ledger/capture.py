@@ -1,6 +1,7 @@
 """Phase 0: capture real test-mode webhook payloads into committed fixtures.
 
-Run it alongside `stripe listen --forward-to localhost:4242/webhooks`. Every delivery that
+It binds the receiving port and then starts `stripe listen` itself, so the capture is one command
+and the listener cannot be pointed at a port that is not accepting yet. Every delivery that
 verifies is written to `fixtures/events/<type>/<event_id>.json`, which makes the fixture set
 idempotent by construction: a redelivery of the same event rewrites its own file instead of
 adding a second one.
@@ -20,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from payment_ledger.config import CaptureSettings
+from payment_ledger.stripe_cli import spawn_listener
 from payment_ledger.webhook import SignatureError, verify
 
 log = logging.getLogger("capture")
@@ -139,7 +141,16 @@ def serve(settings: CaptureSettings | None = None) -> None:
         settings.port,
         settings.fixtures_dir,
     )
-    log.info("point the CLI at it: stripe listen --forward-to localhost:%d/webhooks", settings.port)
+
+    # The listener is started after the socket is bound, so there is no window where the CLI
+    # forwards at a port nothing is accepting on yet and reports the delivery as failed.
+    listener = None
+    if settings.spawn_listener:
+        listener = spawn_listener(settings.port)
+    else:
+        log.info(
+            "point the CLI at it: stripe listen --forward-to localhost:%d/webhooks", settings.port
+        )
 
     try:
         httpd.serve_forever()
@@ -147,6 +158,9 @@ def serve(settings: CaptureSettings | None = None) -> None:
         log.info("stopping")
     finally:
         httpd.server_close()
+        if listener is not None:
+            listener.terminate()
+            listener.wait(timeout=10)
 
 
 def main() -> None:

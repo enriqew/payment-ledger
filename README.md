@@ -40,8 +40,9 @@ full run costs nothing and there is no always-on service.
 - Docker with Compose v2
 - Python 3.12 on the host (the host only runs the capture receiver, the generator and the tests;
   Spark runs inside containers, which is why the host interpreter does not need to match Spark's)
-- The [Stripe CLI](https://docs.stripe.com/stripe-cli), authenticated against a **test mode**
-  sandbox account, for the capture step
+- The [Stripe CLI](https://docs.stripe.com/stripe-cli), for the capture step. A copy dropped in
+  `.tools/` (gitignored) is used ahead of anything on PATH, so it needs no system-wide install.
+  `make login` authenticates it against a **test mode** sandbox account, once
 
 ## Quick start
 
@@ -59,20 +60,22 @@ against them rather than guessed at in advance. Spark arrives in phase 1, Airflo
 
 ## Capturing real test-mode events
 
-This is the step that gives every schema in the pipeline a real payload behind it. It needs three
-terminals.
+This is the step that gives every schema in the pipeline a real payload behind it.
 
 ```bash
-# 1. forward test-mode webhooks to the local receiver.
-#    the command prints a signing secret (whsec_...); put it in .env as STRIPE_WEBHOOK_SECRET
-stripe listen --forward-to localhost:4242/webhooks
-
-# 2. run the receiver, which verifies each signature and writes the event to fixtures/events/
-make capture
-
-# 3. make the sandbox emit the event types the ledger is built from
-make trigger
+make login      # once, opens a browser and authenticates against the sandbox
+make capture    # verifies each signature, writes to fixtures/events/
+make trigger    # in a second terminal: make the sandbox emit the event types the ledger needs
 ```
+
+`make capture` binds its port and then starts `stripe listen --forward-to localhost:4242/webhooks`
+as a child process, so there is no ordering to get right and the listener dies with the receiver.
+It also asks the CLI for the signing secret (`stripe listen --print-secret`) rather than having it
+copied into `.env` by hand, which is how a receiver ends up verifying against a stale secret and
+rejecting every delivery for what looks like a key problem. Set `STRIPE_WEBHOOK_SECRET` to pin a
+specific secret, or `CAPTURE_SPAWN_LISTEN=0` to run the listener yourself.
+
+`make fixtures` counts what has been captured, by event type.
 
 Each event lands at `fixtures/events/<type>/<event_id>.json`, so a redelivery of the same event
 overwrites its own file rather than creating a second one. The receiver logs a redelivery when it
@@ -95,6 +98,7 @@ assumptions instead of the processor's payloads.
 src/payment_ledger/
   config.py        environment-backed settings, one place
   webhook.py       Stripe-Signature parsing and verification (stdlib hmac)
+  stripe_cli.py    finding the cli, its signing secret, and the listener subprocess
   capture.py       the receiver: verify, write fixture, log
 docker/            the local stack
 conf/              spark defaults, iceberg catalog wiring
