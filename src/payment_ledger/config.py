@@ -45,6 +45,11 @@ def _get(key: str, default: str | None = None) -> str | None:
     return os.environ.get(key) or _FILE_ENV.get(key) or default
 
 
+def setting(key: str, default: str | None = None) -> str | None:
+    """Read one setting: the real environment first, then `.env`, then the default."""
+    return _get(key, default)
+
+
 def _flag(key: str, default: bool) -> bool:
     raw = _get(key)
     if raw is None:

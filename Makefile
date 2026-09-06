@@ -49,12 +49,12 @@ logs:  ## Follow stack logs
 	$(COMPOSE) logs -f
 
 .PHONY: login
-login:  ## Authenticate the cli against a test-mode sandbox (opens a browser, once)
+login:  ## Authenticate the cli against a sandbox in the browser (or set STRIPE_API_KEY in .env)
 	$(STRIPE) login
 
 .PHONY: whoami
-whoami:  ## Show which account the cli is authenticated against
-	$(STRIPE) config --list
+whoami:  ## Show which account and which mode the cli will act as
+	$(PY) -m payment_ledger.stripe_cli whoami
 
 .PHONY: capture
 capture:  ## Run the webhook receiver; it starts `stripe listen` itself
@@ -64,12 +64,7 @@ capture:  ## Run the webhook receiver; it starts `stripe listen` itself
 trigger:  ## Make the sandbox emit the event types the ledger is built from
 	@echo "triggering the charge lifecycle. disputes resolve asynchronously,"
 	@echo "so leave the receiver running after this finishes."
-	$(STRIPE) trigger charge.succeeded
-	$(STRIPE) trigger charge.refunded
-	$(STRIPE) trigger charge.dispute.created
-	$(STRIPE) trigger charge.dispute.closed
-	$(STRIPE) trigger payout.paid
-	$(STRIPE) trigger payout.failed
+	$(PY) -m payment_ledger.stripe_cli trigger
 
 .PHONY: fixtures
 fixtures:  ## Count what has been captured so far, by event type
