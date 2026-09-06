@@ -1,0 +1,78 @@
+{
+  "api_version": "2026-08-26.dahlia",
+  "created": 1788676668,
+  "data": {
+    "object": {
+      "amount": 100,
+      "balance_transaction": null,
+      "balance_transactions": [],
+      "charge": "ch_3UCZhVFoqb9tltQk13nb0dvS",
+      "created": 1788676635,
+      "currency": "usd",
+      "enhanced_eligibility_types": [],
+      "evidence": {
+        "access_activity_log": null,
+        "billing_address": null,
+        "cancellation_policy": null,
+        "cancellation_policy_disclosure": null,
+        "cancellation_rebuttal": null,
+        "customer_communication": null,
+        "customer_email_address": null,
+        "customer_name": null,
+        "customer_purchase_ip": null,
+        "customer_signature": null,
+        "duplicate_charge_documentation": null,
+        "duplicate_charge_explanation": null,
+        "duplicate_charge_id": null,
+        "enhanced_evidence": {},
+        "product_description": "(created by Stripe CLI)",
+        "receipt": null,
+        "refund_policy": null,
+        "refund_policy_disclosure": null,
+        "refund_refusal_explanation": null,
+        "service_date": null,
+        "service_documentation": null,
+        "shipping_address": null,
+        "shipping_carrier": null,
+        "shipping_date": null,
+        "shipping_documentation": null,
+        "shipping_tracking_number": null,
+        "uncategorized_file": null,
+        "uncategorized_text": "losing_evidence"
+      },
+      "evidence_details": {
+        "due_by": 1789430399,
+        "enhanced_eligibility": {},
+        "has_evidence": true,
+        "past_due": false,
+        "submission_count": 2
+      },
+      "id": "du_1UCZhXFoqb9tltQkyqlVonI9",
+      "is_charge_refundable": true,
+      "livemode": false,
+      "metadata": {},
+      "object": "dispute",
+      "payment_intent": "pi_3UCZhVFoqb9tltQk1skx2Y5K",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "case_type": "chargeback",
+          "network": "visa",
+          "network_reason_code": "10.4"
+        },
+        "type": "card"
+      },
+      "reason": "fraudulent",
+      "status": "won"
+    }
+  },
+  "id": "evt_1UCZi4Foqb9tltQkv4cLFNRt",
+  "livemode": false,
+  "object": "event",
+  "pending_webhooks": 2,
+  "request": {
+    "id": null,
+    "idempotency_key": null
+  },
+  "type": "charge.dispute.closed"
+}

@@ -20,11 +20,13 @@ listener's own stdout goes to devnull for the same reason.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from payment_ledger import config
@@ -270,16 +272,121 @@ def trigger(names: tuple[str, ...] = TRIGGERS + PAYOUT_TRIGGERS) -> int:
     return 1 if failures else 0
 
 
+# Responding to a dispute in test mode is driven by the evidence text, not by a card number.
+# These three values are Stripe's, documented under Testing > Disputes.
+ESCALATE = "escalate_inquiry_evidence"
+WIN = "winning_evidence"
+
+INQUIRY_PREFIX = "warning_"
+SETTLED = ("won", "lost")
+
+
+def _dispute(dispute_id: str) -> dict:
+    completed = _run("get", f"/v1/disputes/{dispute_id}", timeout=30)
+    return json.loads(completed.stdout)
+
+
+def _await_settlement(dispute_id: str, done: tuple[str, ...], tries: int = 25) -> dict:
+    """Poll one dispute until it leaves the states we are waiting on.
+
+    Every transition here is asynchronous on Stripe's side, and each one is its own webhook
+    delivery. Polling the object is only how this process knows when to move on; the payloads the
+    capture is after arrive at the receiver regardless.
+    """
+    dispute = _dispute(dispute_id)
+    for _ in range(tries):
+        if dispute.get("status") in done:
+            return dispute
+        time.sleep(6)
+        dispute = _dispute(dispute_id)
+    return dispute
+
+
+def disputes(lose: bool = True) -> int:
+    """Drive one dispute from inquiry to a settled chargeback.
+
+    `stripe trigger charge.dispute.created` does not produce a chargeback. It produces an
+    inquiry, whose statuses are all prefixed `warning_` and whose closure moves no money at all:
+    `balance_transactions` comes back empty. A ledger built on those payloads would never see the
+    reversal it exists to account for.
+
+    The lifecycle is therefore driven the whole way here. Escalating the inquiry turns it into a
+    real chargeback, and settling that one is what produces `charge.dispute.funds_withdrawn` and a
+    balance transaction with the money on it.
+    """
+    before = {
+        d["id"]
+        for d in json.loads(_run("get", "/v1/disputes", "-d", "limit=30").stdout).get("data", [])
+    }
+
+    if _run("trigger", "charge.dispute.created").returncode != 0:
+        print("could not create an inquiry")
+        return 1
+
+    inquiry = None
+    for _ in range(20):
+        time.sleep(3)
+        current = json.loads(_run("get", "/v1/disputes", "-d", "limit=30").stdout).get("data", [])
+        new = [d for d in current if d["id"] not in before]
+        if new:
+            inquiry = new[0]
+            break
+
+    if inquiry is None:
+        print("the inquiry never appeared")
+        return 1
+    print(f"inquiry      {inquiry['id']}  {inquiry['status']}")
+
+    _run(
+        "post",
+        f"/v1/disputes/{inquiry['id']}",
+        "-d",
+        f"evidence[uncategorized_text]={ESCALATE}",
+        "-d",
+        "submit=true",
+    )
+    escalated = _await_settlement(inquiry["id"], done=("needs_response",))
+    print(f"escalated    {escalated['status']}")
+    if escalated["status"].startswith(INQUIRY_PREFIX):
+        print("the inquiry did not escalate; nothing further to do")
+        return 1
+
+    if lose:
+        # Accepting liability is the documented way to lose one on purpose.
+        _run("post", f"/v1/disputes/{inquiry['id']}/close")
+    else:
+        _run(
+            "post",
+            f"/v1/disputes/{inquiry['id']}",
+            "-d",
+            f"evidence[uncategorized_text]={WIN}",
+            "-d",
+            "submit=true",
+        )
+
+    settled = _await_settlement(inquiry["id"], done=SETTLED)
+    movements = [(b["amount"], b["currency"]) for b in settled.get("balance_transactions", [])]
+    print(f"settled      {settled['status']}  moved {movements or 'nothing'}")
+    return 0 if settled["status"] in SETTLED else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     import sys
 
+    actions = {
+        "whoami": whoami,
+        "trigger": trigger,
+        "dispute-lost": lambda: disputes(lose=True),
+        "dispute-won": lambda: disputes(lose=False),
+    }
+
     args = list(sys.argv[1:] if argv is None else argv)
-    if not args or args[0] not in ("whoami", "trigger"):
-        print("usage: python -m payment_ledger.stripe_cli {whoami|trigger}")
+    if not args or args[0] not in actions:
+        print(f"usage: python -m payment_ledger.stripe_cli {{{'|'.join(actions)}}}")
         return 2
 
     try:
-        return whoami() if args[0] == "whoami" else trigger()
+        return actions[args[0]]()
     except StripeCliError as exc:
         print(exc)
         return 1

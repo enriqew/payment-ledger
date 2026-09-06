@@ -80,6 +80,10 @@ hooks:  ## Install the pre-commit hook that refuses a commit carrying a credenti
 	chmod +x .git/hooks/pre-commit
 	@echo "installed. bypass a single commit with --no-verify if you ever need to."
 
+.PHONY: dispute
+dispute:  ## Drive one inquiry all the way to a settled chargeback (the trigger only makes inquiries)
+	$(PY) -m payment_ledger.stripe_cli dispute-lost
+
 .PHONY: check
 check: audit lint test  ## Everything CI runs
 

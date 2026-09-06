@@ -1,0 +1,88 @@
+{
+  "api_version": "2026-08-26.dahlia",
+  "created": 1788676554,
+  "data": {
+    "object": {
+      "amount": 100,
+      "balance_transaction": null,
+      "balance_transactions": [],
+      "charge": "ch_3UCZS4Foqb9tltQk0FvywAMT",
+      "created": 1788675678,
+      "currency": "usd",
+      "enhanced_eligibility_types": [],
+      "evidence": {
+        "access_activity_log": null,
+        "billing_address": null,
+        "cancellation_policy": null,
+        "cancellation_policy_disclosure": null,
+        "cancellation_rebuttal": null,
+        "customer_communication": null,
+        "customer_email_address": null,
+        "customer_name": null,
+        "customer_purchase_ip": null,
+        "customer_signature": null,
+        "duplicate_charge_documentation": null,
+        "duplicate_charge_explanation": null,
+        "duplicate_charge_id": null,
+        "enhanced_evidence": {},
+        "product_description": null,
+        "receipt": null,
+        "refund_policy": null,
+        "refund_policy_disclosure": null,
+        "refund_refusal_explanation": null,
+        "service_date": null,
+        "service_documentation": null,
+        "shipping_address": null,
+        "shipping_carrier": null,
+        "shipping_date": null,
+        "shipping_documentation": null,
+        "shipping_tracking_number": null,
+        "uncategorized_file": null,
+        "uncategorized_text": "winning_evidence"
+      },
+      "evidence_details": {
+        "due_by": 1789430399,
+        "enhanced_eligibility": {},
+        "has_evidence": true,
+        "past_due": false,
+        "submission_count": 1
+      },
+      "id": "du_1UCZS6Foqb9tltQkyXk2ByqO",
+      "is_charge_refundable": true,
+      "livemode": false,
+      "metadata": {},
+      "object": "dispute",
+      "payment_intent": "pi_3UCZS4Foqb9tltQk06SnYYo6",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "case_type": "inquiry",
+          "network": "visa",
+          "network_reason_code": "10"
+        },
+        "type": "card"
+      },
+      "reason": "fraudulent",
+      "status": "warning_under_review"
+    },
+    "previous_attributes": {
+      "evidence": {
+        "uncategorized_text": null
+      },
+      "evidence_details": {
+        "has_evidence": false,
+        "submission_count": 0
+      },
+      "status": "warning_needs_response"
+    }
+  },
+  "id": "evt_3UCZS4Foqb9tltQk0WqXUaVz",
+  "livemode": false,
+  "object": "event",
+  "pending_webhooks": 2,
+  "request": {
+    "id": "req_3IWWiQQ2VNrh8W",
+    "idempotency_key": "3768e36a-2c09-4ee2-a1cd-d7b84322035d"
+  },
+  "type": "charge.dispute.updated"
+}

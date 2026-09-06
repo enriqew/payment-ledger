@@ -81,6 +81,19 @@ committed under `fixtures/events/`, redacted as section 9 describes, and are the
 every schema downstream. They are committed precisely so that cloning the repository is enough:
 the capture refreshes them and needs an account, running the pipeline does not.
 
+**A triggered dispute is an inquiry, not a chargeback.** `stripe trigger charge.dispute.created`
+produces a dispute whose statuses are all prefixed `warning_`, and closing one moves no money:
+`balance_transactions` comes back empty. Building the reversal accounting on those payloads would
+have meant never seeing the reversal at all. Escalating the inquiry turns it into a real
+chargeback, and settling that is what delivers `charge.dispute.funds_withdrawn` and a balance
+transaction carrying the amount. `make dispute` drives that lifecycle end to end.
+
+**The event currency is not the settlement currency.** The captured lost dispute is a charge of
+`100 usd` whose balance transaction is `-86 eur`, because the sandbox settles in EUR. Nothing
+downstream may take the amount off the charge and treat it as money that moved. The amount that
+moved is on the balance transaction, in the currency the balance is denominated in, which is the
+reason section 4 makes `balance_transaction` the primitive rather than `charge`.
+
 **The payout leg is not captured, and that is a gap worth naming.** `payout.paid` and
 `payout.failed` have no trigger fixture: they follow a real payout reaching a terminal state.
 Even `payout.created` and `payout.updated`, which do have fixtures, need an external bank account
