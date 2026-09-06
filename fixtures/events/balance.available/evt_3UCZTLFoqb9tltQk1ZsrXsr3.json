@@ -1,0 +1,57 @@
+{
+  "api_version": "2026-08-26.dahlia",
+  "created": 1788675818,
+  "data": {
+    "object": {
+      "available": [
+        {
+          "amount": 4749,
+          "currency": "eur",
+          "source_types": {
+            "card": 4749
+          }
+        }
+      ],
+      "connect_reserved": [
+        {
+          "amount": 0,
+          "currency": "eur"
+        }
+      ],
+      "livemode": false,
+      "object": "balance",
+      "pending": [
+        {
+          "amount": 110,
+          "currency": "eur",
+          "source_types": {
+            "card": 110
+          }
+        }
+      ],
+      "refund_and_dispute_prefunding": {
+        "available": [
+          {
+            "amount": 0,
+            "currency": "eur"
+          }
+        ],
+        "pending": [
+          {
+            "amount": 0,
+            "currency": "eur"
+          }
+        ]
+      }
+    }
+  },
+  "id": "evt_3UCZTLFoqb9tltQk1ZsrXsr3",
+  "livemode": false,
+  "object": "event",
+  "pending_webhooks": 2,
+  "request": {
+    "id": null,
+    "idempotency_key": null
+  },
+  "type": "balance.available"
+}

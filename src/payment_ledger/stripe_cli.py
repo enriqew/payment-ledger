@@ -179,15 +179,33 @@ def spawn_listener(port: int, path: str = "/webhooks") -> subprocess.Popen[bytes
     )
 
 
-# The event types the ledger is built from. The disputes resolve asynchronously, so the two
+# What `stripe trigger` can produce on its own. The disputes resolve asynchronously, so the two
 # `charge.dispute.*` deliveries arrive minutes apart and the receiver has to still be running.
 TRIGGERS = (
     "charge.succeeded",
     "charge.refunded",
     "charge.dispute.created",
     "charge.dispute.closed",
-    "payout.paid",
-    "payout.failed",
+    "balance.available",
+)
+
+# The payout leg, kept separate because it does not depend on the CLI but on the sandbox.
+# `stripe trigger` ships fixtures for these two, but creating a payout needs an external bank
+# account, and a fresh sandbox has none: the API answers "you don't have any external accounts in
+# that currency". Attaching one is a dashboard step that no API key of ours is allowed to do, so
+# these are attempted apart and their failure is explained instead of read as a broken command.
+#
+# `payout.paid` and `payout.failed` have no trigger fixture at all. They follow a real payout
+# reaching a terminal state, which is why section 3 of the design lists them as captured rather
+# than triggered.
+PAYOUT_TRIGGERS = ("payout.created", "payout.updated")
+
+NO_EXTERNAL_ACCOUNT = "external accounts"
+
+PAYOUT_HINT = (
+    "No payout could be created: this sandbox has no external bank account.\n"
+    "Add a test one under Settings > Payouts in the sandbox dashboard and run this again.\n"
+    "Everything else in phase 0 works without it."
 )
 
 
@@ -224,16 +242,31 @@ def whoami() -> int:
     return 1 if livemode else 0
 
 
-def trigger(names: tuple[str, ...] = TRIGGERS) -> int:
-    """Make the sandbox emit the event types the ledger is built from."""
+def trigger(names: tuple[str, ...] = TRIGGERS + PAYOUT_TRIGGERS) -> int:
+    """Make the sandbox emit the event types the ledger is built from.
+
+    Returns non-zero only for a failure that is not the known missing-bank-account one, so a
+    sandbox without payouts configured still reports the rest of the capture as the success it is.
+    """
     failures = 0
+    no_external_account = False
+
     for name in names:
         completed = _run("trigger", name)
-        status = "ok" if completed.returncode == 0 else "failed"
-        print(f"{status:>7}  {name}")
-        if completed.returncode != 0:
-            failures += 1
-            print(mask((completed.stderr or completed.stdout).strip()))
+        body = (completed.stderr or completed.stdout).strip()
+        if completed.returncode == 0:
+            print(f"     ok  {name}")
+            continue
+        if NO_EXTERNAL_ACCOUNT in body:
+            print(f"skipped  {name}")
+            no_external_account = True
+            continue
+        print(f" failed  {name}")
+        print(mask(body))
+        failures += 1
+
+    if no_external_account:
+        print(f"\n{PAYOUT_HINT}")
     return 1 if failures else 0
 
 

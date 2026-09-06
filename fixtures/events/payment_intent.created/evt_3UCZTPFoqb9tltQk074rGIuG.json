@@ -1,0 +1,88 @@
+{
+  "api_version": "2026-08-26.dahlia",
+  "created": 1788675760,
+  "data": {
+    "object": {
+      "allowed_payment_method_types": null,
+      "amount": 2000,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 0,
+      "application": null,
+      "application_fee_amount": null,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic_async",
+      "client_secret": "pi_3UCZTPFoqb9tltQk0tEHzcnL_secret_K4RELA94BN2yDofA055CPFnY7",
+      "confirmation_method": "automatic",
+      "created": 1788675759,
+      "currency": "usd",
+      "customer": null,
+      "customer_account": null,
+      "description": "(created by Stripe CLI)",
+      "excluded_payment_method_types": null,
+      "id": "pi_3UCZTPFoqb9tltQk0tEHzcnL",
+      "last_payment_error": null,
+      "latest_charge": null,
+      "livemode": false,
+      "managed_payments": {
+        "enabled": false
+      },
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "on_behalf_of": null,
+      "payment_method": null,
+      "payment_method_configuration_details": null,
+      "payment_method_options": {
+        "card": {
+          "installments": null,
+          "mandate_options": null,
+          "network": null,
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "payment_record": null,
+      "processing": null,
+      "receipt_email": null,
+      "review": null,
+      "setup_future_usage": null,
+      "shared_payment_granted_token": null,
+      "shipping": {
+        "address": {
+          "city": "San Francisco",
+          "country": "US",
+          "line1": "[redacted]",
+          "line2": null,
+          "postal_code": "[redacted]",
+          "state": "CA"
+        },
+        "carrier": null,
+        "name": "[redacted]",
+        "phone": null,
+        "tracking_number": null
+      },
+      "source": null,
+      "statement_descriptor": null,
+      "statement_descriptor_suffix": null,
+      "status": "requires_payment_method",
+      "transfer_data": null,
+      "transfer_group": null
+    }
+  },
+  "id": "evt_3UCZTPFoqb9tltQk074rGIuG",
+  "livemode": false,
+  "object": "event",
+  "pending_webhooks": 2,
+  "request": {
+    "id": "req_JhFI2QpgWfisXu",
+    "idempotency_key": "ed5b0d1a-6a09-421c-b6a2-ed2effd115e7"
+  },
+  "type": "payment_intent.created"
+}

@@ -74,10 +74,21 @@ reconciliation. Defensibility is.
 **Schemas come from the real API.** The Stripe CLI runs against a test-mode sandbox:
 `stripe listen --forward-to localhost:4242/webhooks` plus `stripe trigger <event>` yields genuine
 event envelopes for `charge.succeeded`, `charge.refunded`, `charge.dispute.created`,
-`charge.dispute.closed`, `payout.paid`, `payout.failed` and `balance.available`. Those captures are
+`charge.dispute.closed` and `balance.available`. Triggering one of those produces the whole
+lifecycle around it, so the captured set is wider than the list: a triggered charge also delivers
+its `payment_intent.created`, `payment_intent.succeeded` and `charge.updated`. Those captures are
 committed under `fixtures/events/`, redacted as section 9 describes, and are the ground truth for
 every schema downstream. They are committed precisely so that cloning the repository is enough:
 the capture refreshes them and needs an account, running the pipeline does not.
+
+**The payout leg is not captured, and that is a gap worth naming.** `payout.paid` and
+`payout.failed` have no trigger fixture: they follow a real payout reaching a terminal state.
+Even `payout.created` and `payout.updated`, which do have fixtures, need an external bank account
+on the sandbox, and a fresh sandbox has none. So the payout shapes below are read off the API
+reference rather than off a payload this repository has seen. Section 5 depends on payouts to close
+the cash side of the ledger, which means that side is designed and not yet evidenced. Attaching a
+test bank account to the sandbox closes it, and until it is closed nothing here should be read as
+if it were.
 
 **Volume comes from a generator.** `stripe trigger` yields a handful of events, not a stream. The
 generator replays the captured shapes across a simulated calendar at configurable volume, with a
