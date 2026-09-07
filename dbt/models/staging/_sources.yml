@@ -20,6 +20,19 @@ sources:
           - name: currency
             tests: [not_null]
 
+      - name: reported_balance
+        description: >
+          What the processor says its balance was, per day and per currency, computed without
+          consulting the pipeline. This is the anchor, and the whole reason it is worth anything
+          is that it is the one table here the ledger did not produce.
+        columns:
+          - name: as_of_date
+            tests: [not_null]
+          - name: available
+            tests: [not_null]
+          - name: pending
+            tests: [not_null]
+
       - name: charges
         description: One row per charge, from its latest event by event time.
       - name: refunds

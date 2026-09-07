@@ -87,7 +87,20 @@ def test_the_checkpoints_the_jobs_use_are_all_under_the_reset_path():
 # --- the dbt project, checked the same way ------------------------------------------------------
 
 DBT = REPO_ROOT / "dbt"
-GOLD_MODELS = sorted((DBT / "models" / "gold").glob("*.sql"))
+EPHEMERAL = re.compile(r"materialized\s*=\s*'ephemeral'")
+
+
+def materialised_gold_models() -> list:
+    """The gold models that become a table. An ephemeral one is a shared definition compiled into
+    its readers, so there is nothing in the catalog for a reset to drop."""
+    return [
+        path
+        for path in sorted((DBT / "models" / "gold").glob("*.sql"))
+        if not EPHEMERAL.search(path.read_text(encoding="utf-8"))
+    ]
+
+
+GOLD_MODELS = materialised_gold_models()
 
 
 def test_reset_drops_every_gold_model():
@@ -96,7 +109,7 @@ def test_reset_drops_every_gold_model():
     dropped = set(DROPS.findall(MAKEFILE))
     expected = {f"lakehouse.gold.{path.stem}" for path in GOLD_MODELS}
 
-    assert expected, "no gold models found"
+    assert expected, "no materialised gold models found"
     assert expected <= dropped, f"make reset leaves behind: {sorted(expected - dropped)}"
 
 
@@ -138,3 +151,25 @@ def test_no_dbt_model_divides_a_monetary_value():
     for path in GOLD_MODELS + sorted((DBT / "models" / "staging").glob("*.sql")):
         body = re.sub(r"--.*", "", path.read_text(encoding="utf-8"))
         assert "/" not in body, f"{path.name} divides something"
+
+
+def test_the_itemisation_does_not_hang_off_the_table_the_invariant_guards():
+    """dbt skips everything downstream of a failed test. If `reconciliation_items` read
+    `reconciliation`, the run that failed the fourth invariant would also skip the table that
+    explains why, which is the one moment anybody wants to read it. Both read a shared model
+    instead, and this is the test that keeps them siblings."""
+    items = (DBT / "models" / "gold" / "reconciliation_items.sql").read_text(encoding="utf-8")
+    refs = set(re.findall(r"ref\(\s*'([\w]+)'\s*\)", items))
+
+    assert "int_reconciliation" in refs
+    assert "reconciliation" not in refs
+
+
+def test_the_reconciliation_grants_no_tolerance():
+    """Both sides are integers in minor units, so a tolerance is not rounding relief, it is a
+    place for a real discrepancy to live. The test compares against zero and nothing else."""
+    check = (DBT / "tests" / "assert_no_unexplained_difference.sql").read_text(encoding="utf-8")
+    body = re.sub(r"--.*", "", check)
+
+    assert "unexplained_difference != 0" in body
+    assert "abs(" not in body.lower()

@@ -29,13 +29,14 @@ Full design: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Status
 
-**Phase 3 of 7.** A run of any size goes end to end and comes out as a double-entry ledger: the
-generator simulates N transactions from the captured shapes, the producer puts them on Kafka, Spark
-Structured Streaming lands every delivery in `bronze.events`, silver deduplicates that into one row
-per event and one per charge, refund and dispute, and dbt builds the postings, the trial balance
-and the daily close, with the invariants as tests that stop the build. The reconciliation against
-the processor's own reported balance is next. The roadmap is at the bottom of `docs/DESIGN.md`, and
-this line is updated as phases land rather than in advance.
+**Phase 4 of 7.** A run of any size goes end to end and comes out as a double-entry ledger that
+has been weighed against the processor's own reported balance: the generator simulates N
+transactions from the captured shapes, the producer puts them on Kafka, Spark Structured Streaming
+lands every delivery in `bronze.events`, silver deduplicates that into one row per event and one
+per charge, refund and dispute, and dbt builds the postings, the trial balance, the daily close and
+the reconciliation, with all four invariants as tests that stop the build. The chaos suite is next.
+The roadmap is at the bottom of `docs/DESIGN.md`, and this line is updated as phases land rather
+than in advance.
 
 ## Stack
 
@@ -64,7 +65,7 @@ make check            # audit, lint and tests, the same three CI runs
 make up               # kafka, minio, iceberg rest catalog, spark
 make ps               # check everything is healthy
 
-make e2e              # 1000 simulated transactions, all the way to a balanced ledger
+make e2e              # 1000 simulated transactions, to a ledger that reconciles
 make e2e N=100000 SEED=7 DAYS=90
 
 make down             # stop, keeping volumes; make clean drops them too
@@ -225,12 +226,49 @@ explaining it, passes and has not been observed failing. Every way of breaking t
 enough to trip it trips the first invariant first, which is worth knowing rather than glossing:
 entries summing to zero is the tighter net.
 
-The fourth invariant in the design, that a closed day agrees with the processor's reported balance,
-belongs to phase 4. It needs the reported balance in the warehouse and a table to itemise a
-difference into. What can be said today is a sanity check rather than a reconciliation: the
-ledger's final `balance_available` of 28,877,624 and its pending balance of zero match, to the
-cent, the `daily_balance.jsonl` the generator computed by walking the same money with different
-code.
+## The reconciliation
+
+The fourth invariant is the only one that can see outside the books, and that is the whole point of
+it. The other three prove the ledger is internally consistent, and internally consistent is not the
+same as right.
+
+`gold.reconciliation` compares the ledger's daily close against the balance the processor reports,
+day by day and currency by currency. The reported side is loaded by `make silver` from what the
+generator computed by walking the same money with **separate code that never reads an Iceberg
+table**: two walks sharing an implementation would agree by construction and prove nothing. Over
+all 62 days of an `N=1000` run the two agree exactly, closing at 28,877,624 available and nothing
+pending.
+
+**No tolerance is granted.** Both sides are integers in minor units, so there is nothing to round
+and a tolerance is only somewhere for a real discrepancy to live. A cent fails the run like a
+million.
+
+**What it catches that nothing else does.** A balance transaction the processor never reported was
+injected into the list, and the ledger posted it happily:
+
+| Check | Result |
+|---|---|
+| Entries sum to zero | PASS, both of its entries balanced |
+| Every balance transaction is posted | PASS, it was posted |
+| Available balance is explained | PASS |
+| Both sides close the same days | PASS |
+| **No unexplained difference** | **FAIL 62**, and the build exits 1 |
+
+The books were internally consistent and wrong by exactly one transaction, and only the comparison
+against something the pipeline did not produce noticed.
+
+`gold.reconciliation_items` is the itemisation. It keys on the day the difference **moved**, not on
+the days it is wrong: a balance difference is cumulative, so one bad transaction on the third makes
+every day after it wrong by the same amount and itemising all of them means listing the whole run.
+On the injected fault it narrowed 1153 transactions to 29 rows on a single day, and flagged the two
+whose net matched the movement exactly. One of them was the phantom. The other had the same net by
+coincidence, which is worth saying rather than claiming the model points at one row: it hands a
+human two candidates instead of a run to read.
+
+It is also deliberately not built from `reconciliation`. dbt skips everything downstream of a
+failed test, so hanging the itemisation off the table the invariant guards would take the detail
+away at exactly the moment somebody needs it. Both read a shared ephemeral model instead, and the
+first version of this got that wrong: the run that failed also skipped the table explaining why.
 
 `cp .env.example .env` only if you want to override a default. Nothing in it is required.
 
@@ -305,6 +343,7 @@ jobs/
   silver_events.py   bronze deliveries into one row per event, merged on the key
   silver_entities.py the event log into one row per charge, refund and dispute
   balance_transaction_list.py  what /v1/balance_transactions returns, which webhooks do not carry
+  reported_balance.py          the balance the processor reports, which is the anchor
 dbt/               the gold ledger: postings, trial balance, daily close, and the invariants
 conf/              spark defaults, iceberg catalog wiring, log4j
 dbt/               gold ledger models and the invariant tests   (phase 3)

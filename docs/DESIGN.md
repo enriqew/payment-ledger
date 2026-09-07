@@ -178,7 +178,20 @@ running this has no account of their own.
 
 So the generator emits two artifacts and keeps them apart: the event stream, and the processor's
 reported balance, computed by its own accounting from the same simulated calendar without
-consulting the pipeline. The ledger is weighed against that. The chaos module perturbs one side
+consulting the pipeline. `gold.reconciliation` weighs the ledger against that, day by day and
+currency by currency, and grants **no tolerance**: both sides are integers in minor units, so
+there is nothing to round and a tolerance is only somewhere for a real discrepancy to live.
+
+`gold.reconciliation_items` is the itemisation the fourth invariant refers to. It keys on the day
+the difference **moved**, not on the days it is wrong: a balance difference is cumulative, so one
+bad transaction on the third makes every day after it wrong by the same amount, and listing the
+transactions of every wrong day means listing the whole run. It is empty on a healthy run, which is
+the statement that every day agreed rather than a table nobody finished. It is also deliberately
+not built from `reconciliation`: dbt skips everything downstream of a failed test, so hanging the
+itemisation off the table the invariant guards would take the detail away at exactly the moment
+somebody needs to read it.
+
+The chaos module perturbs one side
 and not the other, which is what makes a divergence appear.
 
 What this design proves: that the reconciliation detects a divergence, attributes it to specific
@@ -242,11 +255,15 @@ a real account rather than a caption on a report.
 4. A closed day's derived balance equals the processor's reported balance, or the difference is
    itemised in the reconciliation table. An unexplained delta fails the run.
 
-The first three are singular tests in `dbt/tests/`, which dbt can only pass or fail, and a failure
-stops every model downstream of them rather than publishing a gold table nobody should read. The
-fourth belongs to phase 4: it needs the processor's reported balance in the warehouse and a table
-to itemise a difference into, and neither exists until the reconciliation is built. Saying it is
-enforced today would be saying something that is not true.
+All four are singular tests in `dbt/tests/`, which dbt can only pass or fail, and a failure stops
+every model downstream rather than publishing a gold table nobody should read.
+
+**The fourth is the only one that can see outside the books, and that is the whole point of it.**
+The first three prove the ledger is internally consistent, and internally consistent is not the
+same as right: post a transaction the processor never saw, and both of its entries balance, the
+trial balance still sums to zero, and the ledger is confidently wrong by exactly that transaction.
+Nothing inside the system notices. Only a comparison against something the pipeline did not
+produce does, which is why the anchor being computed independently is not a detail.
 
 Amounts are integers in the currency's minor unit at every layer. No float touches a monetary
 value, no model in gold contains a division, and there is a test for both.
@@ -338,9 +355,9 @@ came out of a measured run, with that run's configuration beside it.
 | 0 | Scaffold, local stack, webhook capture into fixtures | done |
 | 1 | Kafka producer and Spark streaming into `bronze.events` | done |
 | 2 | Generator with the calendar simulation; silver dedup and typing | done |
-| 3 | dbt ledger models and the invariants as failing tests | done, except the fourth |
-| 4 | Reconciliation against the processor balance | **next**, and it carries the fourth invariant |
-| 5 | Chaos suite, one Airflow DAG, one Iceberg namespace per scenario | not started |
+| 3 | dbt ledger models and the invariants as failing tests | done |
+| 4 | Reconciliation against the processor balance | done |
+| 5 | Chaos suite, one Airflow DAG, one Iceberg namespace per scenario | **next** |
 | 6 | Export contract and the artifacts a dashboard reads | not started |
 | 7 | Write-up | not started |
 

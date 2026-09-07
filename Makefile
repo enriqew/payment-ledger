@@ -31,7 +31,10 @@ DROP_TABLES := \
   DROP TABLE IF EXISTS lakehouse.silver.balance_transaction_list; \
   DROP TABLE IF EXISTS lakehouse.gold.ledger_postings; \
   DROP TABLE IF EXISTS lakehouse.gold.account_balances; \
-  DROP TABLE IF EXISTS lakehouse.gold.daily_close;
+  DROP TABLE IF EXISTS lakehouse.gold.daily_close; \
+  DROP TABLE IF EXISTS lakehouse.gold.reconciliation; \
+  DROP TABLE IF EXISTS lakehouse.gold.reconciliation_items; \
+  DROP TABLE IF EXISTS lakehouse.silver.reported_balance;
 
 .DEFAULT_GOAL := help
 
@@ -117,7 +120,7 @@ generate:  ## Simulate N transactions from the captured shapes (N=1000 SEED=1 DA
 	$(PY) -m payment_ledger.generator -n $(N) --seed $(SEED) --days $(DAYS)
 
 .PHONY: e2e
-e2e: reset generate  ## Generate N transactions and take them all the way through silver
+e2e: reset generate  ## Generate N transactions and take them all the way to a reconciled ledger
 	$(PY) -m payment_ledger.producer --events data/generated/events.jsonl
 	$(MAKE) bronze
 	$(MAKE) silver
@@ -128,6 +131,7 @@ silver:  ## Deduplicate bronze into silver.events, then project it onto one row 
 	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/silver_events.py
 	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/silver_entities.py
 	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/balance_transaction_list.py
+	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/reported_balance.py
 
 .PHONY: gold
 gold:  ## Build the double-entry ledger and run the invariants; a failing one fails the build

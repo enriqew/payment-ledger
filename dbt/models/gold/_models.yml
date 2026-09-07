@@ -64,3 +64,27 @@ models:
         tests: [not_null]
       - name: balance_available
         tests: [not_null]
+
+  - name: reconciliation
+    description: >
+      The ledger weighed against the balance the processor reports, per day and per currency. The
+      check the double-entry invariants cannot make: post a transaction twice and the books stay
+      internally consistent and are wrong by exactly one transaction. No tolerance is granted,
+      because both sides are integers and a tolerance is only somewhere for a discrepancy to hide.
+    columns:
+      - name: close_date
+        tests: [not_null]
+      - name: currency
+        tests: [not_null]
+      - name: unexplained_difference
+        description: the difference left once the itemised causes are taken out
+        tests: [not_null]
+
+  - name: reconciliation_items
+    description: >
+      For every day the reconciliation cannot explain, the balance transactions that touched it.
+      Empty on a healthy run, which is the statement that every day agreed rather than a table
+      nobody finished.
+    columns:
+      - name: balance_transaction_id
+        tests: [not_null]
