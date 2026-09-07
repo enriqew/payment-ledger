@@ -27,9 +27,10 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 
-# local stack state
+# local stack state, and everything a generated run writes. A run is reproducible from its seed
+# and its transaction count, so committing its output would be committing something recomputable.
 warehouse/
-data/minio/
+data/
 logs/
 spark-warehouse/
 metastore_db/
