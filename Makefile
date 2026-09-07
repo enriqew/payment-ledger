@@ -24,7 +24,7 @@ help:  ## Show this help
 install:  ## Create the host venv and install dev extras
 	python -m venv .venv
 	$(PY) -m pip install --quiet --upgrade pip
-	$(PY) -m pip install --quiet -e ".[dev]"
+	$(PY) -m pip install --quiet -e ".[dev,pipeline]"
 	@echo "ok. next: cp .env.example .env"
 
 .PHONY: up
@@ -83,6 +83,18 @@ hooks:  ## Install the pre-commit hook that refuses a commit carrying a credenti
 .PHONY: dispute
 dispute:  ## Drive one inquiry all the way to a settled chargeback (the trigger only makes inquiries)
 	$(PY) -m payment_ledger.stripe_cli dispute-lost
+
+.PHONY: produce
+produce:  ## Publish the captured fixtures to kafka (needs no stripe account)
+	$(PY) -m payment_ledger.producer
+
+.PHONY: bronze
+bronze:  ## Drain the topic into bronze.events; spark runs in a container, the host needs no jvm
+	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/bronze_events.py
+
+.PHONY: sql
+sql:  ## Open spark-sql against the lakehouse catalog
+	$(COMPOSE) run --rm --entrypoint /opt/spark/bin/spark-sql spark
 
 .PHONY: check
 check: audit lint test  ## Everything CI runs

@@ -69,6 +69,25 @@ this project is actually about: reproducing a closed period exactly as it was re
 producing an auditable trail of what changed and why. Latency is not the scarce resource in
 reconciliation. Defensibility is.
 
+**Bronze keeps every delivery, and that is what makes the first failure detectable.** Nothing is
+deduplicated on the way in. The gap between the row count in bronze and the distinct event count
+in silver is not untidiness to be cleaned up later, it is the measurement: a bronze layer that
+collapsed a redelivery would be destroying the evidence it exists to hold. The payload is stored
+as the exact string that arrived, for the same reason. Reparse and rewrite it and every schema
+decision downstream is being made about our own JSON writer rather than about the processor's.
+
+**Bronze is partitioned by arrival, not by event time.** An event that lands three weeks late
+belongs to the day it arrived, because the question bronze answers is what was delivered and when.
+Placing that dispute against the charge it contests is silver's problem, and it is a different
+problem: the arrival record must not pretend to know an ordering the transport never promised.
+
+**The topic is keyed by the charge, not by the event.** A dispute goes to the partition of the
+charge it disputes, so the whole life of one charge (succeeded, refunded, disputed, closed) lands
+in one partition and arrives in order. Nothing downstream is permitted to depend on that. Webhooks
+are unordered by contract and silver sorts by event time per entity regardless. It is worth doing
+anyway because it puts a duplicate next to its original, which is the cheapest place to catch
+one.
+
 ## 3. Data sources
 
 **Schemas come from the real API.** The Stripe CLI runs against a test-mode sandbox:
@@ -246,18 +265,25 @@ came out of a measured run, with that run's configuration beside it.
 
 | Phase | Deliverable | State |
 |---|---|---|
-| 0 | Scaffold, local stack, webhook capture into fixtures | **in progress** |
-| 1 | Kafka producer and Spark streaming into `bronze.events` | not started |
-| 2 | Generator with the calendar simulation; silver dedup and typing | not started |
+| 0 | Scaffold, local stack, webhook capture into fixtures | done |
+| 1 | Kafka producer and Spark streaming into `bronze.events` | done |
+| 2 | Generator with the calendar simulation; silver dedup and typing | **next** |
 | 3 | dbt ledger models and the four invariants as failing tests | not started |
 | 4 | Reconciliation against the processor balance | not started |
 | 5 | Chaos suite, one Airflow DAG, one Iceberg namespace per scenario | not started |
 | 6 | Export contract and the artifacts a dashboard reads | not started |
 | 7 | Write-up | not started |
 
-Services appear in `docker/docker-compose.yml` with the phase that needs them. Kafka, MinIO and the
-Iceberg REST catalog are there now; Spark arrives with phase 1 and Airflow with phase 5, pinned
-when there is a job to run against them.
+Services appear in `docker/docker-compose.yml` with the phase that needs them. Kafka, MinIO, the
+Iceberg REST catalog and Spark are there now; Airflow arrives with phase 5, pinned when there is a
+job to run against it.
+
+Worth recording, since the point of pinning a service before there is a job for it was to avoid
+guessing: phase 1 found that three things in that compose file had never actually run. The Iceberg
+image was pinned to a tag that was never published, and both init containers passed their scripts
+in a shape Compose word-splits before `sh` ever sees them, so the topic and the bucket were being
+created by nothing. A service written down in advance is a plan, not a working stack, and the
+difference only shows up the first time something is submitted against it.
 
 ## 9. Reporting rules
 

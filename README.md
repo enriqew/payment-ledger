@@ -29,9 +29,10 @@ Full design: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Status
 
-**Phase 0 of 7.** The scaffold, the local stack and the webhook capture are in place. Nothing
-downstream of the capture exists yet. The roadmap is at the bottom of `docs/DESIGN.md`, and this
-line is updated as phases land rather than in advance.
+**Phase 1 of 7.** The captured payloads reach Kafka and land in an Iceberg `bronze.events` table
+on MinIO, keyed by the charge they are about and keeping every delivery including the duplicates.
+Silver, the ledger and the reconciliation do not exist yet. The roadmap is at the bottom of
+`docs/DESIGN.md`, and this line is updated as phases land rather than in advance.
 
 ## Stack
 
@@ -54,13 +55,28 @@ full run costs nothing and there is no always-on service.
 produces the volume, so a clone is enough. An account is needed only to refresh the fixtures.
 
 ```bash
-make install          # host venv for the receiver, the generator and the tests
+make install          # host venv for the receiver, the producer, the generator and the tests
 make check            # audit, lint and tests, the same three CI runs
 
 make up               # kafka, minio, iceberg rest catalog
 make ps               # check everything is healthy
+
+make produce          # the committed fixtures onto the kafka topic
+make bronze           # drain the topic into bronze.events
+
 make down             # stop, keeping volumes; make clean drops them too
 ```
+
+`make bronze` submits `jobs/bronze_events.py` inside the Spark container, so the host never needs a
+JVM or a matching Python. The first run downloads the Iceberg and Kafka connector jars into a
+volume; every run after that is offline. It drains what is on the topic and exits, and the
+checkpoint means running it twice does not write the same offsets twice.
+
+Over the 59 payloads captured in phase 0, the first run writes 59 rows. Run `make produce` again
+and the second `make bronze` reports 118 deliveries of 59 distinct events, which is the
+duplicate-delivery failure showing up as a number instead of a claim. Bronze keeps both on
+purpose; collapsing them is silver's job and the gap between the two counts is how the duplicate
+is detected at all.
 
 `cp .env.example .env` only if you want to override a default. Nothing in it is required.
 
@@ -100,10 +116,16 @@ overwrites its own file rather than creating a second one. The receiver logs a r
 sees one, which is worth watching: it is the first of the six failures showing up on its own,
 before anything is injected on purpose.
 
-`make trigger` walks the event types the ledger needs: `charge.succeeded`, `charge.refunded`,
-`charge.dispute.created`, `charge.dispute.closed`, `payout.paid`, `payout.failed` and
-`balance.available`. Some of them the CLI can produce directly; the dispute lifecycle needs the
-sandbox to advance on its own, so those arrive late and the receiver simply keeps listening.
+`make trigger` walks what the CLI can actually produce: `charge.succeeded`, `charge.refunded`,
+`charge.dispute.created`, `charge.dispute.closed` and `balance.available`. The captured set comes
+out wider than that, because triggering one event pulls its whole lifecycle behind it.
+
+`make dispute` exists because a triggered dispute is an **inquiry**, not a chargeback: its statuses
+are all prefixed `warning_` and closing one moves no money at all. It drives one inquiry through to
+a settled chargeback, which is the only way the reversal the ledger has to account for ever
+appears. `payout.paid` and `payout.failed` have no fixture in the CLI, and the payout events that
+do need an external bank account on the sandbox, so the payout leg is not captured yet. Section 3
+of the design says so rather than implying otherwise.
 
 **Signature verification is not optional here.** The receiver rejects any request whose
 `Stripe-Signature` header does not verify against the signing secret, and rejects timestamps outside
@@ -119,10 +141,13 @@ src/payment_ledger/
   stripe_cli.py    finding the cli, its signing secret, and the listener subprocess
   capture.py       the receiver: verify, write fixture, log
   redact.py        what may be committed: the live-mode guard and the redaction rules
+  producer.py      the captured fixtures onto the kafka topic
 scripts/
   audit_publishable.py   the same rules, over every tracked file
 docker/            the local stack
-conf/              spark defaults, iceberg catalog wiring
+jobs/
+  bronze_events.py the kafka topic into bronze.events, structured streaming
+conf/              spark defaults, iceberg catalog wiring, log4j
 dbt/               gold ledger models and the invariant tests   (phase 3)
 airflow/dags/      ledger_daily, ledger_chaos                   (phase 5)
 fixtures/events/   captured test-mode payloads, redacted and committed
