@@ -165,6 +165,10 @@ services:
       # transaction list is a query result, and the job that loads it reads the file the
       # generator wrote.
       - ../data:/opt/payment-ledger/data:ro
+      # The one path a job may write to. Exporting is the only thing here that has to put a file
+      # back in the tree, so it gets a directory of its own with an obvious name rather than the
+      # tree becoming writable.
+      - ../export:/opt/payment-ledger/export
       - spark-checkpoints:/opt/payment-ledger/checkpoints
 
   # Arrives with phase 3, because dbt speaks JDBC and Spark only speaks it through this. Long

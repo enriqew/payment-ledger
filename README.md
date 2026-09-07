@@ -29,15 +29,17 @@ Full design: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Status
 
-**Phase 5 of 7.** A run of any size goes end to end and comes out as a double-entry ledger that has
+**Phase 6 of 7.** A run of any size goes end to end and comes out as a double-entry ledger that has
 been weighed against the processor's own reported balance: the generator simulates N transactions
 from the captured shapes, the producer puts them on Kafka, Spark Structured Streaming lands every
 delivery in `bronze.events`, silver deduplicates that into one row per event and one per charge,
 refund and dispute, and dbt builds the postings, the trial balance, the daily close and the
 reconciliation, with all four invariants as tests that stop the build. The six failures in the
-table above are now injected on purpose, one namespace per scenario, and each one is checked
-against what it said it would do: `make chaos`. Next is the export contract. The roadmap is at the
-bottom of `docs/DESIGN.md`, and this line is updated as phases land rather than in advance.
+table above are injected on purpose, one namespace per scenario, and each is checked against what
+it said it would do: `make chaos`. What a dashboard may read, and what the export refuses to
+publish, is `make export` and [`docs/EXPORT.md`](docs/EXPORT.md). What is left is the write-up. The
+roadmap is at the bottom of `docs/DESIGN.md`, and this line is updated as phases land rather than
+in advance.
 
 ## Stack
 
@@ -66,7 +68,7 @@ make check            # audit, lint and tests, the same three CI runs
 make up               # kafka, minio, iceberg rest catalog, spark
 make ps               # check everything is healthy
 
-make e2e              # 1000 simulated transactions, to a ledger that reconciles
+make e2e              # 1000 simulated transactions, to a ledger that reconciles and exports
 make e2e N=100000 SEED=7 DAYS=90
 
 make down             # stop, keeping volumes; make clean drops them too
@@ -79,8 +81,9 @@ checkpoint means running it twice does not write the same offsets twice.
 
 The pieces are also separate targets: `make generate` simulates a run, `make produce` publishes one
 (or the committed fixtures, with no argument), `make bronze` drains the topic, `make silver`
-deduplicates and types it, `make gold` builds the ledger and runs the invariants, and `make reset`
-throws away everything a previous run left behind.
+deduplicates and types it, `make gold` builds the ledger and runs the invariants, `make export`
+assembles what a dashboard reads, and `make reset` throws away everything a previous run left
+behind.
 
 Over the 59 payloads captured in phase 0, `make produce && make bronze` writes 59 rows. Run
 `make produce` a second time and bronze reports 118 deliveries of 59 distinct events, which is the
@@ -362,6 +365,48 @@ where the repository lives **on the host**: the daemon binds host paths and know
 inside of the Airflow container. That is the honest cost of orchestrating containers from within
 one, and it is the reason the service definitions appear a second time inside the DAG.
 
+## What a dashboard reads
+
+A page reads files. The one this feeds is a static site with no backend, so the interface is a
+handful of JSON files somebody copies, and the interesting part is not the copying. It is deciding
+what those files may contain and refusing to write them when the run behind them does not deserve
+to be read.
+
+```bash
+make export     # dump the gold tables, assemble the artifacts, check every promise
+```
+
+One `N=1000` run produces 37 KB:
+
+| File | Rows | What one row is |
+|---|---|---|
+| `manifest.json` | 1 | the run behind the export, its fingerprint and a count per file |
+| `accounts.json` | 6 | the trial balance, with the signs double entry uses |
+| `daily_close.json` | 62 | what the books say that day closed at, and what moved |
+| `reconciliation.json` | 62 | the ledger weighed against the balance the processor reports |
+| `findings.json` | 0 | coverage gaps and restatements, empty when the inputs agreed |
+| `chaos.json` | 7 | the six failures injected on purpose, and what fired |
+
+**It refuses rather than warns.** A trial balance that does not sum to zero, a day the
+reconciliation cannot explain, a float where money should be, a day written as a timestamp rather
+than a plain ISO day, or a chaos suite carrying some of its arms but not all of them, and nothing
+is written at all. A page has no way to find any of that out afterwards, so the checks are on the
+way out.
+
+**Bounded by the calendar, not by volume.** Every artifact is a day, an account or a scenario, so a
+hundred thousand transactions produce the same 62 daily rows as a thousand. `ledger_postings` is
+deliberately not exported: it is the one table that grows with volume, and a page that wanted
+individual postings would be asking for a query engine rather than for a file.
+
+**Byte identical for the same run.** There is no timestamp anywhere in it. What identifies an
+export is the fingerprint of the generated run it was built from, recorded in the manifest beside
+the seed and the transaction count, so an export whose numbers moved is an export whose input
+moved and a diff says so.
+
+The full contract, including what a consumer may and may not do with the files, is
+[`docs/EXPORT.md`](docs/EXPORT.md). The export itself is not committed, for the same reason
+`data/` is not: it is recomputable from the seed, and what is worth committing is the contract.
+
 ## Capturing real test-mode events
 
 This is the step that gives every schema in the pipeline a real payload behind it.
@@ -415,6 +460,7 @@ src/payment_ledger/
   generator.py     simulated volume, replayed from the captured shapes
   chaos.py         the six failures as inputs, and the verdict on a run that met one
   chaos_run.py     each scenario through the pipeline, into a lakehouse of its own
+  export.py        the artifacts a dashboard reads, and every promise they have to keep
 scripts/
   audit_publishable.py   the same rules, over every tracked file
 docker/            the local stack
@@ -425,12 +471,14 @@ jobs/
   balance_transaction_list.py  what /v1/balance_transactions returns, which webhooks do not carry
   reported_balance.py          the balance the processor reports, which is the anchor
   chaos_report.py              what one arm of the suite ended up holding, as a count per table
+  export_tables.py             the gold tables out of the lakehouse, as plain rows
 conf/              spark defaults, iceberg catalog wiring, log4j
 dbt/               gold ledger models and the invariant tests   (phase 3)
 airflow/dags/      chaos_suite, the same seven arms as a DAG    (phase 5)
 fixtures/events/   captured test-mode payloads, redacted and committed
 data/generated/    what a run writes; reproducible from its seed, so never committed
 data/chaos/        what each scenario was given, and the verdict on what came back
+export/            what a dashboard reads; recomputable, so the contract is what is committed
 tests/
 ```
 

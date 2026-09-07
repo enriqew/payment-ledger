@@ -31,6 +31,9 @@ __pycache__/
 # and its transaction count, so committing its output would be committing something recomputable.
 warehouse/
 data/
+# What a dashboard reads. Recomputable from the same run as everything else in data/, and the
+# contract that says what may be in it is the thing worth committing.
+export/
 logs/
 spark-warehouse/
 metastore_db/

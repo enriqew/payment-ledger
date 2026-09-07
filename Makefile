@@ -123,11 +123,12 @@ generate:  ## Simulate N transactions from the captured shapes (N=1000 SEED=1 DA
 	$(PY) -m payment_ledger.generator -n $(N) --seed $(SEED) --days $(DAYS)
 
 .PHONY: e2e
-e2e: reset generate  ## Generate N transactions and take them all the way to a reconciled ledger
+e2e: reset generate  ## Generate N transactions and take them all the way to what a dashboard reads
 	$(PY) -m payment_ledger.producer --events data/generated/events.jsonl
 	$(MAKE) bronze
 	$(MAKE) silver
 	$(MAKE) gold
+	$(MAKE) export
 
 .PHONY: silver
 silver:  ## Deduplicate bronze into silver.events, then project it onto one row per entity
@@ -163,6 +164,13 @@ reset:  ## Start over: drop the topic, the checkpoints, every table and their fi
 # it submits can then be read by a test. Every table an arm touches has to carry that arm's name,
 # and getting that wrong turns a chaos suite into six runs of the same undamaged pipeline nodding
 # at each other. That is checked in `tests/test_chaos_run.py`, not hoped for here.
+
+# --- phase 6: what a dashboard reads --------------------------------------------------------------
+
+.PHONY: export
+export:  ## Dump the gold tables and assemble the artifacts a dashboard reads
+	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/export_tables.py
+	$(PY) -m payment_ledger.export
 
 .PHONY: scenarios
 scenarios:  ## List the six failures and what is supposed to catch each one
