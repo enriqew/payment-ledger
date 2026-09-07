@@ -55,7 +55,10 @@ services:
     command:
       - |
         set -e
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092           --create --if-not-exists --topic stripe.events.raw           --partitions 6 --replication-factor 1           --config cleanup.policy=delete --config retention.ms=604800000
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 \
+          --create --if-not-exists --topic stripe.events.raw \
+          --partitions 6 --replication-factor 1 \
+          --config cleanup.policy=delete --config retention.ms=604800000
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list
     restart: "no"
 
@@ -110,11 +113,36 @@ services:
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_REGION: us-east-1
 
+  # The namespaces the catalog needs, created the same way the topic and the bucket are: on
+  # purpose, so a typo is an error rather than a silently empty layer.
+  #
+  # `default` is in the list for an unglamorous reason. PyHive issues `USE default` when it opens
+  # a JDBC session, so dbt cannot connect to a catalog that has no such namespace, and dbt-spark
+  # exposes no way to change it. It stays empty.
+  iceberg-init:
+    image: curlimages/curl:8.11.0
+    container_name: pl-iceberg-init
+    depends_on:
+      iceberg-rest:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for ns in default bronze silver gold; do
+          code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://iceberg-rest:8181/v1/namespaces -H 'Content-Type: application/json' -d "{\"namespace\": [\"$$ns\"]}")
+          echo "$$ns $$code"
+        done
+    restart: "no"
+
   # Arrives with phase 1, the first phase with a job to run against it. Not a long-lived
   # service: `make bronze` runs one submit and the container goes away, which is why it sits
   # behind a profile and does not start with `make up`.
   spark:
-    image: apache/spark:3.5.7-python3
+    build:
+      context: ..
+      dockerfile: docker/spark.Dockerfile
+    image: payment-ledger/spark:3.5.7-iceberg1.10.1
     profiles: ["jobs"]
     depends_on:
       kafka:
@@ -128,24 +156,74 @@ services:
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_REGION: us-east-1
       SPARK_CONF_DIR: /opt/payment-ledger/conf
-    # As root because the image runs as uid 185 while a fresh named volume comes up owned by
-    # root, so the ivy cache and the checkpoint would both be unwritable on the first run. The
-    # container is local, disposable and exposes no port; the alternative is a Dockerfile whose
-    # only job is a mkdir.
-    user: root
     working_dir: /opt/payment-ledger
     entrypoint: ["/opt/spark/bin/spark-submit"]
     volumes:
       - ../jobs:/opt/payment-ledger/jobs:ro
       - ../conf:/opt/payment-ledger/conf:ro
-      - spark-ivy:/opt/payment-ledger/ivy
+      # A generated run, for the one input that does not arrive as a webhook: the balance
+      # transaction list is a query result, and the job that loads it reads the file the
+      # generator wrote.
+      - ../data:/opt/payment-ledger/data:ro
       - spark-checkpoints:/opt/payment-ledger/checkpoints
+
+  # Arrives with phase 3, because dbt speaks JDBC and Spark only speaks it through this. Long
+  # lived, unlike the `spark` service: a `dbt build` opens a session, runs a few dozen statements
+  # and closes it, and paying JVM startup for each of those would make the ledger feel like batch
+  # for no reason.
+  spark-thrift:
+    build:
+      context: ..
+      dockerfile: docker/spark.Dockerfile
+    image: payment-ledger/spark:3.5.7-iceberg1.10.1
+    container_name: pl-spark-thrift
+    profiles: ["jobs"]
+    depends_on:
+      minio:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_started
+    ports:
+      - "10000:10000"
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+      SPARK_CONF_DIR: /opt/payment-ledger/conf
+    # Not /opt/payment-ledger, which is mounted read only: the thrift server writes a local derby
+    # metastore for its own session catalog before it ever reaches the Iceberg one.
+    working_dir: /tmp
+    entrypoint: ["/opt/spark/bin/spark-submit"]
+    command:
+      - "--class"
+      - "org.apache.spark.sql.hive.thriftserver.HiveThriftServer2"
+      - "--name"
+      - "payment-ledger-thrift"
+      - "spark-internal"
+    volumes:
+      - ../conf:/opt/payment-ledger/conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/10000' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  dbt:
+    build:
+      context: ..
+      dockerfile: docker/dbt.Dockerfile
+    profiles: ["jobs"]
+    depends_on:
+      spark-thrift:
+        condition: service_healthy
+    volumes:
+      - ../dbt:/opt/payment-ledger/dbt
 
 volumes:
   kafka-data:
   minio-data:
-  # The ivy cache is a volume so the connector jars are downloaded once rather than on every run,
-  # and the checkpoints are one so a rerun resumes from the offsets it left off at instead of
-  # replaying the topic into bronze a second time.
-  spark-ivy:
+  # The checkpoints are a volume so a rerun resumes from the offsets it left off at instead of
+  # replaying the topic into bronze a second time. The connector jars used to need one too; they
+  # are in the image now, so a run needs no network at all.
   spark-checkpoints:
