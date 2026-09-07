@@ -190,8 +190,11 @@ airflow:  ## Start the scheduler, with the chaos suite as a DAG, on localhost:80
 	@echo "airflow: http://localhost:8080  user admin"
 	@echo "password: docker exec pl-airflow cat /opt/airflow/standalone_admin_password.txt"
 
+# The same two prerequisites `chaos` has, and for the same reason: an arm delivered on top of a
+# previous suite publishes its events into a topic that already holds them. They stay here rather
+# than becoming tasks because both talk to the docker CLI, which the scheduler does not have.
 .PHONY: dag
-dag:  ## Run the whole suite through Airflow instead of through the loop
+dag: chaos-reset generate  ## Run the whole suite through Airflow instead of through the loop
 	$(COMPOSE) exec airflow airflow dags trigger chaos_suite
 
 .PHONY: sql

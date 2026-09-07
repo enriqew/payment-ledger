@@ -20,6 +20,11 @@ needs a scheduler, and one machine can only run one Spark job at a time anyway.
 
 The arms run one after another and the baseline runs first, because every other arm compares its
 counts against the baseline's.
+
+**Trigger it with `make dag`, not from the UI on a lakehouse the last suite left behind.** An arm
+delivered on top of a previous one publishes into a topic that already holds its events, and the
+late arrival arm would take four closes instead of two. Clearing that is `make chaos-reset`, which
+stays outside the DAG because it talks to the docker CLI and the scheduler does not have one.
 """
 
 from __future__ import annotations
@@ -135,6 +140,10 @@ def inject(scenario: str, **_) -> None:
     print(f"{scenario}: {json.dumps(manifest['injected'], sort_keys=True)}")
 
 
+def topic(scenario: str, **_) -> None:
+    chaos_run.create_topic(scenario)
+
+
 def publish(scenario: str, wave: str, **_) -> None:
     chaos_run.publish(scenario, chaos_dir(scenario) / wave / "events.jsonl")
 
@@ -180,7 +189,16 @@ with DAG(
                 python_callable=inject,
                 op_kwargs={"scenario": scenario.name},
             )
-            tail = injected
+            # Auto-creation is off on the broker, so each arm makes its own topic. Through the
+            # admin API rather than by running kafka-topics.sh inside the broker, because the
+            # scheduler cannot exec into a running service.
+            created = PythonOperator(
+                task_id="topic",
+                python_callable=topic,
+                op_kwargs={"scenario": scenario.name},
+            )
+            injected >> created
+            tail = created
             for number in range(1, scenario.waves + 1):
                 wave = f"wave{number}"
                 published = PythonOperator(

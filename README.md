@@ -345,8 +345,8 @@ LEDGER_HOST_ROOT="$(pwd)" make airflow   # on Windows: pwd -W
 make dag
 ```
 
-`airflow/dags/chaos_suite.py` lays the same seven arms out as 77 tasks: inject, publish, the five
-Spark jobs, the ledger, the measurement and the verdict, per wave. It is not a second
+`airflow/dags/chaos_suite.py` lays the same seven arms out as 84 tasks: inject, create the
+topic, publish, the five Spark jobs, the ledger, the measurement and the verdict, per wave. It is not a second
 implementation. The steps come from the same functions the command line uses, and what differs is
 only how a step becomes a running container.
 

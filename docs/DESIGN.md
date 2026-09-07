@@ -191,8 +191,8 @@ not built from `reconciliation`: dbt skips everything downstream of a failed tes
 itemisation off the table the invariant guards would take the detail away at exactly the moment
 somebody needs to read it.
 
-The chaos module perturbs one side
-and not the other, which is what makes a divergence appear.
+The chaos module perturbs one side and not the other, which is what makes a divergence appear at
+all. Section 6 has what each scenario damages and what the run is required to do about it.
 
 What this design proves: that the reconciliation detects a divergence, attributes it to specific
 events, and refuses to close a day it cannot explain. What it does not prove: that the ledger

@@ -30,6 +30,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -85,9 +86,6 @@ def compose_argv(step: Step) -> list[str]:
         flags += ["-e", f"{key}={value}"]
     if step.entrypoint:
         flags += ["--entrypoint", step.entrypoint]
-    if step.service == "kafka":
-        # The broker is a running service, not something to start a copy of.
-        return [*COMPOSE, "exec", "-T", step.service, *step.command]
     return [*COMPOSE, "run", "--rm", "-T", *flags, step.service, *step.command]
 
 
@@ -212,28 +210,23 @@ def arm(scenario: str, out: Path, seed: int) -> int:
 
 
 def create_topic(scenario: str) -> None:
-    """Auto-creation is off on the broker, so a typo in a topic name is an error rather than a
-    silently empty stream. Already existing is not an error."""
-    run(
-        Step(
-            label="topic",
-            service="kafka",
-            command=[
-                "/opt/kafka/bin/kafka-topics.sh",
-                "--bootstrap-server",
-                "kafka:19092",
-                "--create",
-                "--if-not-exists",
-                "--topic",
-                topic(scenario),
-                "--partitions",
-                "6",
-                "--replication-factor",
-                "1",
-            ],
-            tolerate=True,
-        )
-    )
+    """The arm's own topic, created rather than left to the broker.
+
+    Auto-creation is off, so a typo in a topic name is an error instead of a silently empty stream,
+    which means every arm has to make its own. Through the admin API rather than by running
+    `kafka-topics.sh` inside the broker's container: the scheduler that runs this DAG has no docker
+    CLI and cannot exec into a running service, and a step that only one of the two runners can
+    take is a step the other one quietly skips.
+    """
+    from confluent_kafka.admin import AdminClient, NewTopic
+
+    admin = AdminClient({"bootstrap.servers": bootstrap()})
+    name = topic(scenario)
+    if name in admin.list_topics(timeout=30).topics:
+        return
+
+    print(f"\n--- creating {name}")
+    admin.create_topics([NewTopic(name, num_partitions=6, replication_factor=1)])[name].result(60)
 
 
 def keep_run_results(out: Path) -> None:
@@ -282,6 +275,33 @@ def verdict(scenario: str, out: Path) -> int:
     return 0
 
 
+def drop_topics(scenarios: list[str]) -> None:
+    """The arms' topics, and then a wait for them to actually be gone.
+
+    Deletion is asynchronous: the broker acknowledges the request and removes the partitions in its
+    own time, so creating the topic again immediately afterwards can land on the corpse of the old
+    one and inherit its events. The suite does exactly that, one command later.
+    """
+    from confluent_kafka.admin import AdminClient
+
+    admin = AdminClient({"bootstrap.servers": bootstrap()})
+    names = [topic(scenario) for scenario in scenarios]
+    existing = [name for name in names if name in admin.list_topics(timeout=30).topics]
+    if not existing:
+        return
+
+    print(f"\n--- dropping {' '.join(existing)}")
+    for name, future in admin.delete_topics(existing, operation_timeout=60).items():
+        future.result(60)
+        print(f"  {name}")
+
+    for _ in range(30):
+        if not set(existing) & set(admin.list_topics(timeout=30).topics):
+            return
+        time.sleep(1)
+    raise SystemExit("the broker still lists a topic that was deleted, so a rerun would resume it")
+
+
 def inventory() -> list[tuple[str, str]]:
     """Every table an arm can create, as (layer, table), read off the ordinary reset.
 
@@ -311,23 +331,8 @@ def reset(scenarios: list[str], out: Path) -> None:
     quietest of the four is the checkpoint, because a stream that believes it already consumed the
     topic reports an empty run rather than an error.
     """
+    drop_topics(scenarios)
     for scenario in scenarios:
-        run(
-            Step(
-                label=f"drop topic {topic(scenario)}",
-                service="kafka",
-                command=[
-                    "/opt/kafka/bin/kafka-topics.sh",
-                    "--bootstrap-server",
-                    "kafka:19092",
-                    "--delete",
-                    "--topic",
-                    topic(scenario),
-                ],
-                # A topic that was never created is the normal case on a first run.
-                tolerate=True,
-            )
-        )
         run(
             Step(
                 label=f"drop checkpoints {scenario}",
