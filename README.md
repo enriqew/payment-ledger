@@ -350,6 +350,9 @@ topic, publish, the five Spark jobs, the ledger, the measurement and the verdict
 implementation. The steps come from the same functions the command line uses, and what differs is
 only how a step becomes a running container.
 
+It has been run as a whole, not only parsed: one trigger, 84 tasks, every arm reaching the same
+verdict it reaches from the command line, with the same tests failing on the same rows.
+
 Scheduling is not what it is for. One machine runs one Spark job at a time and nothing here runs on
 a clock. What the DAG has is a task boundary around every step, so a suite that goes wrong says
 which step went wrong instead of leaving it at the end of a log.
