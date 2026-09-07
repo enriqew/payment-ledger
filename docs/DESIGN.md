@@ -209,25 +209,47 @@ Accounts, minimal but complete:
 | `expense:processing_fees` | |
 | `expense:disputes` | dispute amounts and dispute fees |
 
-Postings, in minor units, signed, derived from the balance transaction:
+Postings are in minor units, signed, and derived from the balance transaction and nothing else.
+Every balance transaction produces exactly **two entries**, and an entry is a set of postings that
+sums to zero per currency.
 
-- charge: `+net` to `balance_pending`, `+fee` to `processing_fees`, `-amount` to `gross_sales`
-- available_on: `-net` from `balance_pending`, `+net` to `balance_available`
-- refund: `+amount` to `refunds`, `-amount` from `balance_available`
-- dispute opened: `+amount` and `+fee` to `disputes`, `-(amount+fee)` from `balance_available`
-- dispute won: reverse the amount, keep the fee
-- payout: `+amount` to `bank`, `-amount` from `balance_available`
+**Recognition**, at `created`. `+net` to `balance_pending`, plus whatever balances it:
+
+| Category | The counterpart |
+|---|---|
+| charge | `+fee` to `processing_fees` and `-amount` to `gross_sales`, which balances because `net = amount - fee` |
+| refund | `-net` to `contra_revenue:refunds` |
+| dispute | `-net` to `expense:disputes`, which is the amount and the dispute fee together |
+| dispute reversal | `-net` to `expense:disputes` again; the reversal carries no fee, so the amount comes back and the fee stays |
+| payout | `-net` to `asset:bank` |
+| anything else | `expense:unclassified`, which is not in the accepted chart of accounts, so an unmodelled category fails the build rather than going missing |
+
+**Availability**, at `available_on`. `-net` from `balance_pending`, `+net` to `balance_available`.
+
+**This corrects what this section said before the payloads were captured.** It used to post a
+refund and a dispute straight against the available balance, as if only charges passed through
+pending. Every balance transaction carries an `available_on`, refunds and disputes included, so
+posting them against available on the day they are created reports cash as withdrawn a week before
+it actually is. Making maturation a uniform second entry is also what turns `balance_pending` into
+a real account rather than a caption on a report.
 
 **Invariants, enforced as dbt tests that fail the build:**
 
-1. Postings for one event sum to zero, per currency.
+1. Postings for one entry sum to zero, per currency.
 2. Every balance transaction has at least one posting. No money enters without a record.
-3. `balance_available` never goes negative without a dispute or adjustment explaining it.
+3. `balance_available` never goes negative without a dispute or a refund explaining it, counted
+   cumulatively: a dispute on the third still explains a negative balance on the fifth.
 4. A closed day's derived balance equals the processor's reported balance, or the difference is
    itemised in the reconciliation table. An unexplained delta fails the run.
 
+The first three are singular tests in `dbt/tests/`, which dbt can only pass or fail, and a failure
+stops every model downstream of them rather than publishing a gold table nobody should read. The
+fourth belongs to phase 4: it needs the processor's reported balance in the warehouse and a table
+to itemise a difference into, and neither exists until the reconciliation is built. Saying it is
+enforced today would be saying something that is not true.
+
 Amounts are integers in the currency's minor unit at every layer. No float touches a monetary
-value, and the export schema check enforces it.
+value, no model in gold contains a division, and there is a test for both.
 
 ## 5. Restatement
 
@@ -270,6 +292,13 @@ refuses a set of paths outright (`.env`, `*.pem`, `*.key`, `credentials`, `servi
 committed before its rule existed. Most of those paths belong to phases 3 and 5, which is
 deliberate. The moment to refuse a credentials file is before one exists.
 
+Phase 3 is where that stopped being theoretical. dbt requires a file called `profiles.yml` and the
+audit rejects that name anywhere, not only at `dbt/`. Both available shortcuts were the thing the
+rule exists to prevent: putting the file where the pattern does not look is evasion, and adding an
+exception for the one place it would be harmless is how a rule stops catching the real thing. The
+profile is rendered at container start from the environment instead, so nothing by that name is
+ever tracked, and what it contains is a host and a port rather than a secret.
+
 **No credential can be printed.** The signing secret is resolved from the CLI into memory and
 written nowhere. Every error path that echoes CLI output goes through `mask()` first, because
 `stripe listen --print-secret` is a command whose entire purpose is printing a credential, and the
@@ -309,15 +338,15 @@ came out of a measured run, with that run's configuration beside it.
 | 0 | Scaffold, local stack, webhook capture into fixtures | done |
 | 1 | Kafka producer and Spark streaming into `bronze.events` | done |
 | 2 | Generator with the calendar simulation; silver dedup and typing | done |
-| 3 | dbt ledger models and the four invariants as failing tests | **next** |
-| 4 | Reconciliation against the processor balance | not started |
+| 3 | dbt ledger models and the invariants as failing tests | done, except the fourth |
+| 4 | Reconciliation against the processor balance | **next**, and it carries the fourth invariant |
 | 5 | Chaos suite, one Airflow DAG, one Iceberg namespace per scenario | not started |
 | 6 | Export contract and the artifacts a dashboard reads | not started |
 | 7 | Write-up | not started |
 
 Services appear in `docker/docker-compose.yml` with the phase that needs them. Kafka, MinIO, the
-Iceberg REST catalog and Spark are there now; Airflow arrives with phase 5, pinned when there is a
-job to run against it.
+Iceberg REST catalog, Spark, a Spark Thrift server and dbt are there now; Airflow arrives with
+phase 5, pinned when there is a job to run against it.
 
 Two more things surfaced the same way, in phase 2, and both are the kind that only appear when a
 job runs. Iceberg's streaming source writes its initial offset into the Spark checkpoint using the

@@ -27,7 +27,11 @@ DROP_TABLES := \
   DROP TABLE IF EXISTS lakehouse.silver.charges; \
   DROP TABLE IF EXISTS lakehouse.silver.refunds; \
   DROP TABLE IF EXISTS lakehouse.silver.disputes; \
-  DROP TABLE IF EXISTS lakehouse.silver.balance_transactions;
+  DROP TABLE IF EXISTS lakehouse.silver.balance_transactions; \
+  DROP TABLE IF EXISTS lakehouse.silver.balance_transaction_list; \
+  DROP TABLE IF EXISTS lakehouse.gold.ledger_postings; \
+  DROP TABLE IF EXISTS lakehouse.gold.account_balances; \
+  DROP TABLE IF EXISTS lakehouse.gold.daily_close;
 
 .DEFAULT_GOAL := help
 
@@ -43,8 +47,9 @@ install:  ## Create the host venv and install dev extras
 	@echo "ok. next: cp .env.example .env"
 
 .PHONY: up
-up:  ## Start kafka, minio and the iceberg rest catalog
+up:  ## Start kafka, minio, the iceberg rest catalog and the thrift server dbt talks to
 	$(COMPOSE) up -d
+	$(COMPOSE) --profile jobs up -d spark-thrift
 	@echo "minio console: http://localhost:9001 (minioadmin / minioadmin)"
 
 .PHONY: down
@@ -116,11 +121,17 @@ e2e: reset generate  ## Generate N transactions and take them all the way throug
 	$(PY) -m payment_ledger.producer --events data/generated/events.jsonl
 	$(MAKE) bronze
 	$(MAKE) silver
+	$(MAKE) gold
 
 .PHONY: silver
 silver:  ## Deduplicate bronze into silver.events, then project it onto one row per entity
 	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/silver_events.py
 	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/silver_entities.py
+	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/balance_transaction_list.py
+
+.PHONY: gold
+gold:  ## Build the double-entry ledger and run the invariants; a failing one fails the build
+	$(COMPOSE) run --rm dbt build
 
 # Four pieces of state, and forgetting any one of them makes the next run lie: the topic still
 # holds the last run's events, the checkpoint still says they were consumed, the catalog still
@@ -137,7 +148,8 @@ reset:  ## Start over: drop the topic, the checkpoints, every table and their fi
 	$(COMPOSE) run --rm --entrypoint /opt/spark/bin/spark-sql spark -e "$(DROP_TABLES)"
 	$(COMPOSE) run --rm --entrypoint /bin/sh minio-init \
 	  -c "mc alias set l http://minio:9000 minioadmin minioadmin >/dev/null && \
-	      mc rm --recursive --force --quiet l/warehouse/bronze l/warehouse/silver || true"
+	      mc rm --recursive --force --quiet \
+	        l/warehouse/bronze l/warehouse/silver l/warehouse/gold || true"
 
 .PHONY: sql
 sql:  ## Open spark-sql against the lakehouse catalog

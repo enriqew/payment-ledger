@@ -1,0 +1,24 @@
+name: payment_ledger
+version: "0.1.0"
+profile: payment_ledger
+
+model-paths: ["models"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  payment_ledger:
+    staging:
+      # Ephemeral, so staging is a CTE and never a database object. Views would need the catalog
+      # to support them, and more to the point staging here is a rename and a narrowing, not
+      # something anyone should be able to query and mistake for the ledger.
+      +materialized: ephemeral
+    gold:
+      +materialized: table
+      +file_format: iceberg
+
+# The ledger is recomputed, not appended, so a failing invariant stops the build before anything
+# reads a gold table that should not exist. See section 5 of docs/DESIGN.md.
+flags:
+  send_anonymous_usage_stats: false

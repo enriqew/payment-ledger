@@ -1,0 +1,66 @@
+version: 2
+
+models:
+  - name: ledger_postings
+    description: >
+      Double-entry postings derived from balance transactions. Two entries per transaction:
+      recognition at `created` and availability at `available_on`. An entry is a set of postings
+      that sums to zero per currency, which is what makes the first invariant checkable.
+    columns:
+      - name: posting_id
+        description: entry plus account, which is unique because an account appears once per entry
+        tests: [unique, not_null]
+      - name: entry_id
+        tests: [not_null]
+      - name: entry_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["recognition", "availability"]
+      - name: account
+        description: >
+          The chart of accounts, closed on purpose. A reporting category nobody has modelled posts
+          to `expense:unclassified`, which is not in this list, so an unmodelled category fails the
+          build instead of quietly leaving money unaccounted for.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - "asset:balance_pending"
+                  - "asset:balance_available"
+                  - "asset:bank"
+                  - "revenue:gross_sales"
+                  - "contra_revenue:refunds"
+                  - "expense:processing_fees"
+                  - "expense:disputes"
+      - name: amount
+        description: signed, in the settlement currency's minor unit, integer at every layer
+        tests: [not_null]
+      - name: currency
+        tests: [not_null]
+      - name: balance_transaction_id
+        tests: [not_null]
+
+  - name: account_balances
+    description: The trial balance, per account and currency, with the signs double entry uses.
+    columns:
+      - name: account
+        tests: [not_null]
+      - name: balance
+        tests: [not_null]
+
+  - name: daily_close
+    description: >
+      What the books say for each day, on a full date spine. This is the side phase 4 weighs
+      against the balance the processor reports.
+    columns:
+      - name: close_date
+        tests: [not_null]
+      - name: currency
+        tests: [not_null]
+      - name: balance_pending
+        tests: [not_null]
+      - name: balance_available
+        tests: [not_null]

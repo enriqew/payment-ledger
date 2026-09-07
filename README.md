@@ -29,11 +29,13 @@ Full design: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Status
 
-**Phase 2 of 7.** A run of any size goes end to end: the generator simulates N transactions from
-the captured shapes, the producer puts them on Kafka, Spark Structured Streaming lands every
-delivery in `bronze.events`, and silver deduplicates that into one row per event and one row per
-charge, refund and dispute. The ledger and the reconciliation are next. The roadmap is at the
-bottom of `docs/DESIGN.md`, and this line is updated as phases land rather than in advance.
+**Phase 3 of 7.** A run of any size goes end to end and comes out as a double-entry ledger: the
+generator simulates N transactions from the captured shapes, the producer puts them on Kafka, Spark
+Structured Streaming lands every delivery in `bronze.events`, silver deduplicates that into one row
+per event and one per charge, refund and dispute, and dbt builds the postings, the trial balance
+and the daily close, with the invariants as tests that stop the build. The reconciliation against
+the processor's own reported balance is next. The roadmap is at the bottom of `docs/DESIGN.md`, and
+this line is updated as phases land rather than in advance.
 
 ## Stack
 
@@ -62,7 +64,7 @@ make check            # audit, lint and tests, the same three CI runs
 make up               # kafka, minio, iceberg rest catalog, spark
 make ps               # check everything is healthy
 
-make e2e              # 1000 simulated transactions, all the way into bronze
+make e2e              # 1000 simulated transactions, all the way to a balanced ledger
 make e2e N=100000 SEED=7 DAYS=90
 
 make down             # stop, keeping volumes; make clean drops them too
@@ -75,7 +77,8 @@ checkpoint means running it twice does not write the same offsets twice.
 
 The pieces are also separate targets: `make generate` simulates a run, `make produce` publishes one
 (or the committed fixtures, with no argument), `make bronze` drains the topic, `make silver`
-deduplicates and types it, and `make reset` throws away everything a previous run left behind.
+deduplicates and types it, `make gold` builds the ledger and runs the invariants, and `make reset`
+throws away everything a previous run left behind.
 
 Over the 59 payloads captured in phase 0, `make produce && make bronze` writes 59 rows. Run
 `make produce` a second time and bronze reports 118 deliveries of 59 distinct events, which is the
@@ -174,6 +177,61 @@ nothing looking wrong. It showed up as `max(created)` on `silver.charges` readin
 thirty day calendar, which is the kind of thing a query finds and a test suite does not, so there
 are now tests for both halves of it.
 
+## The ledger
+
+`make gold` runs dbt against the lakehouse through a Spark Thrift server and builds three tables.
+Every posting comes off a balance transaction and nothing else, which is why `make silver` also
+loads what `/v1/balance_transactions` returns: a webhook names its balance transaction and never
+carries it, so the fee, the net and `available_on` are simply not in the event stream.
+
+Each balance transaction makes exactly two entries, and an entry is a set of postings summing to
+zero per currency. **Recognition** at `created` puts `net` into `asset:balance_pending` and books
+the profit and loss side of it in the same breath. **Availability** at `available_on` moves the
+same money into `asset:balance_available`. The second entry is why the pending balance is an
+account and not a caption: funds captured today are not available today, the balance transaction
+carries the date on which they become so, and a ledger that ignores it reports cash that cannot be
+paid out.
+
+At `N=1000` the trial balance comes out as:
+
+| Account | Balance (eur minor units) | Postings |
+|---|---:|---:|
+| `asset:balance_available` | 28,877,624 | 1152 |
+| `asset:balance_pending` | 0 | 2304 |
+| `contra_revenue:refunds` | 3,104,418 | 92 |
+| `expense:disputes` | 1,276,705 | 60 |
+| `expense:processing_fees` | 531,875 | 1000 |
+| `revenue:gross_sales` | -33,790,622 | 1000 |
+| **total** | **0** | 5608 |
+
+5608 postings across 2304 entries, and the whole ledger sums to zero. `asset:balance_pending`
+finishing at zero is the maturation working: every transaction that was created also matured.
+`revenue:gross_sales` is negative because revenue is a credit, and turning it positive to make a
+dashboard friendlier is exactly how a ledger stops summing to zero.
+
+**The invariants are tests that fail the build, and they have been watched failing.** A test that
+has only ever passed is not evidence, so each was broken on purpose:
+
+| Invariant | Broken by | What dbt did |
+|---|---|---|
+| Entries sum to zero | dropping the fee leg from a charge | `FAIL 1000`, one per charge, 10 downstream nodes skipped |
+| Every balance transaction is posted | filtering disputes out of the model | `FAIL 43`, exactly the dropped disputes, 10 nodes skipped |
+
+Both times the build stopped before `account_balances` or `daily_close` were written, which is the
+point: a broken ledger does not get published and then corrected.
+
+The third invariant, that the available balance never goes negative without a dispute or a refund
+explaining it, passes and has not been observed failing. Every way of breaking the ledger badly
+enough to trip it trips the first invariant first, which is worth knowing rather than glossing:
+entries summing to zero is the tighter net.
+
+The fourth invariant in the design, that a closed day agrees with the processor's reported balance,
+belongs to phase 4. It needs the reported balance in the warehouse and a table to itemise a
+difference into. What can be said today is a sanity check rather than a reconciliation: the
+ledger's final `balance_available` of 28,877,624 and its pending balance of zero match, to the
+cent, the `daily_balance.jsonl` the generator computed by walking the same money with different
+code.
+
 `cp .env.example .env` only if you want to override a default. Nothing in it is required.
 
 **Without `make`** (Windows, mostly), every target is one line; `make help` lists them and the
@@ -246,6 +304,8 @@ jobs/
   bronze_events.py   the kafka topic into bronze.events, structured streaming
   silver_events.py   bronze deliveries into one row per event, merged on the key
   silver_entities.py the event log into one row per charge, refund and dispute
+  balance_transaction_list.py  what /v1/balance_transactions returns, which webhooks do not carry
+dbt/               the gold ledger: postings, trial balance, daily close, and the invariants
 conf/              spark defaults, iceberg catalog wiring, log4j
 dbt/               gold ledger models and the invariant tests   (phase 3)
 airflow/dags/      ledger_daily, ledger_chaos                   (phase 5)
@@ -278,6 +338,14 @@ came from.
 refuses the push, and `make audit` answers the question on demand. CI matters least of the three:
 it runs after the push, and a secret that reached a public history is not undone by deleting it,
 it is undone by rotating it.
+
+**The rule held when it was inconvenient, which is the only test of one.** dbt insists on a file
+called `profiles.yml`, and the audit rejects that name wherever it appears. Moving it somewhere the
+rule does not look would have been evasion, and carving out an exception would have been the exact
+thing the previous paragraph refuses. So the profile is rendered at container start from the
+environment, into a directory that exists only inside the container: nothing named `profiles.yml`
+is ever tracked, and the thing it would have held (a host, a port, a schema) is deployment config
+rather than a credential.
 
 Secondary, since the data is mock either way: a payload arriving with `livemode: true` is refused
 rather than cleaned up, because it means the CLI is authenticated somewhere it should not be. Test

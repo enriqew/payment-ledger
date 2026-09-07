@@ -1,0 +1,26 @@
+version: 2
+
+sources:
+  - name: silver
+    description: >
+      Deduplicated and typed, written by the Spark jobs in `jobs/`. dbt reads silver and owns
+      gold; nothing here writes back into a layer a streaming job maintains.
+    schema: silver
+    tables:
+      - name: balance_transaction_list
+        description: >
+          What `/v1/balance_transactions` returns. Every posting in the ledger comes off this,
+          because a webhook carries `balance_transaction` as an id and not as an object, so the
+          fee, the net and `available_on` are not in the event stream at all.
+        columns:
+          - name: balance_transaction_id
+            tests: [unique, not_null]
+          - name: net
+            tests: [not_null]
+          - name: currency
+            tests: [not_null]
+
+      - name: charges
+        description: One row per charge, from its latest event by event time.
+      - name: refunds
+      - name: disputes

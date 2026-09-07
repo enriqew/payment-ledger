@@ -82,3 +82,59 @@ def test_the_checkpoints_the_jobs_use_are_all_under_the_reset_path():
     for path in JOBS:
         for checkpoint in re.findall(r'DEFAULT_CHECKPOINT\s*=\s*"([^"]+)"', path.read_text()):
             assert checkpoint.startswith("/opt/payment-ledger/checkpoints/")
+
+
+# --- the dbt project, checked the same way ------------------------------------------------------
+
+DBT = REPO_ROOT / "dbt"
+GOLD_MODELS = sorted((DBT / "models" / "gold").glob("*.sql"))
+
+
+def test_reset_drops_every_gold_model():
+    """dbt recreates its tables, but `make reset` still has to drop them: a model removed from the
+    project would otherwise leave its table behind and the next run would report on it."""
+    dropped = set(DROPS.findall(MAKEFILE))
+    expected = {f"lakehouse.gold.{path.stem}" for path in GOLD_MODELS}
+
+    assert expected, "no gold models found"
+    assert expected <= dropped, f"make reset leaves behind: {sorted(expected - dropped)}"
+
+
+def test_the_chart_of_accounts_matches_what_the_ledger_can_post_to():
+    """Two places name the accounts: the model that emits them and the accepted_values test that
+    closes the list. They drift silently, and the way they drift is that a new account stops being
+    checked, which is the opposite of what the test is for.
+
+    `expense:unclassified` is excluded on purpose. The model can emit it, the accepted list must
+    not contain it, and that asymmetry is the mechanism: an unmodelled reporting category posts
+    there and fails the build instead of vanishing.
+    """
+    model = (DBT / "models" / "gold" / "ledger_postings.sql").read_text(encoding="utf-8")
+    emitted = set(re.findall(r"'((?:asset|revenue|contra_revenue|expense):[a-z_]+)'", model))
+
+    schema = (DBT / "models" / "gold" / "_models.yml").read_text(encoding="utf-8")
+    accepted = set(re.findall(r'-\s+"((?:asset|revenue|contra_revenue|expense):[a-z_]+)"', schema))
+
+    assert "expense:unclassified" in emitted, "the catch-all account is gone from the model"
+    assert "expense:unclassified" not in accepted, "the catch-all is accepted, so nothing fails"
+    assert emitted - {"expense:unclassified"} == accepted
+
+
+def test_the_invariants_are_singular_tests_that_fail_the_build():
+    """A generic test can be configured to warn. These are `.sql` files under `tests/`, which dbt
+    can only pass or fail, and a failure stops every model downstream of them."""
+    invariants = {path.stem for path in (DBT / "tests").glob("*.sql")}
+
+    assert {
+        "assert_entries_balance",
+        "assert_every_balance_transaction_is_posted",
+        "assert_available_balance_is_explained",
+    } <= invariants
+
+
+def test_no_dbt_model_divides_a_monetary_value():
+    """Integer minor units survive addition and subtraction. A division is where a ledger quietly
+    becomes approximate, so there is not one anywhere in gold."""
+    for path in GOLD_MODELS + sorted((DBT / "models" / "staging").glob("*.sql")):
+        body = re.sub(r"--.*", "", path.read_text(encoding="utf-8"))
+        assert "/" not in body, f"{path.name} divides something"
