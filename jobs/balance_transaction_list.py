@@ -34,7 +34,11 @@ from pyspark.sql.types import (
 
 DEFAULT_SOURCE = "/opt/payment-ledger/data/generated/balance_transactions.jsonl"
 DEFAULT_TABLE = "lakehouse.silver.balance_transaction_list"
-STREAM_TABLE = "lakehouse.silver.balance_transactions"
+
+# The stream's own copy lives beside the list, whichever namespace that is. Not a constant: the
+# chaos suite runs each scenario into a namespace of its own, and a cross-check pinned to the
+# default one would compare a damaged run against an undamaged neighbour and report agreement.
+STREAM_TABLE = "balance_transactions"
 
 FEE_DETAIL = StructType(
     [
@@ -79,7 +83,8 @@ CREATE TABLE IF NOT EXISTS {table} (
     description            STRING,
     fee_details            ARRAY<STRUCT<amount: BIGINT, currency: STRING,
                                         description: STRING, type: STRING>>,
-    payload                STRING    COMMENT 'the response row, kept the way bronze keeps one'
+    payload                STRING    COMMENT 'the response row, kept the way bronze keeps one',
+    loaded_at              TIMESTAMP COMMENT 'when the pipeline first saw this movement'
 )
 USING iceberg
 PARTITIONED BY (days(created))
@@ -89,11 +94,29 @@ TBLPROPERTIES (
 )
 """
 
+# Every column is refreshed except the one that says when the row first arrived, which is what
+# makes a late arrival visible at all. `UPDATE SET *` would stamp the whole list with the time of
+# the most recent fetch, and a restatement could then no longer say what turned up after a day
+# closed. The list is a query result, so a refetch legitimately restates everything else about a
+# movement: a transaction matures from pending to available, and that has to be allowed through.
 MERGE = """
 MERGE INTO {table} AS target
 USING {batch} AS source
 ON target.balance_transaction_id = source.balance_transaction_id
-WHEN MATCHED THEN UPDATE SET *
+WHEN MATCHED THEN UPDATE SET
+    target.source_id          = source.source_id,
+    target.type               = source.type,
+    target.reporting_category = source.reporting_category,
+    target.amount             = source.amount,
+    target.fee                = source.fee,
+    target.net                = source.net,
+    target.currency           = source.currency,
+    target.created            = source.created,
+    target.available_on       = source.available_on,
+    target.status             = source.status,
+    target.description        = source.description,
+    target.fee_details        = source.fee_details,
+    target.payload            = source.payload
 WHEN NOT MATCHED THEN INSERT *
 """
 
@@ -119,6 +142,7 @@ def load(spark: SparkSession, source: str, table: str) -> None:
         F.col("txn.description"),
         F.col("txn.fee_details"),
         F.col("payload"),
+        F.current_timestamp().alias("loaded_at"),
     )
 
     rows.createOrReplaceTempView("balance_transaction_batch")
@@ -138,7 +162,8 @@ def report(spark: SparkSession, table: str) -> None:
     # The same money, described twice by two independent paths. The dispute payloads embed their
     # balance transactions expanded; the list returns them again. If those two ever disagree, one
     # of them is wrong and the ledger is built on whichever it happened to read.
-    if not spark.catalog.tableExists(STREAM_TABLE):
+    carried = f"{table.rsplit('.', 1)[0]}.{STREAM_TABLE}"
+    if not spark.catalog.tableExists(carried):
         print("\nno stream-carried balance transactions to check against yet")
         return
 
@@ -149,7 +174,7 @@ def report(spark: SparkSession, table: str) -> None:
             count(l.balance_transaction_id)                       AS found_in_list,
             sum(CASE WHEN s.net = l.net AND s.amount = l.amount
                      AND s.fee = l.fee THEN 1 ELSE 0 END)         AS agreeing
-        FROM {STREAM_TABLE} s
+        FROM {carried} s
         LEFT JOIN {table} l USING (balance_transaction_id)
         """
     ).collect()[0]

@@ -5,7 +5,10 @@ sources:
     description: >
       Deduplicated and typed, written by the Spark jobs in `jobs/`. dbt reads silver and owns
       gold; nothing here writes back into a layer a streaming job maintains.
-    schema: silver
+    # A variable rather than a constant because phase 5 runs the same project against a namespace
+    # of its own per chaos scenario, so a damaged run and the run it is compared against can sit
+    # side by side in the catalog instead of overwriting each other. Unset, it is plain silver.
+    schema: "{{ var('silver_schema', 'silver') }}"
     tables:
       - name: balance_transaction_list
         description: >
@@ -37,3 +40,12 @@ sources:
         description: One row per charge, from its latest event by event time.
       - name: refunds
       - name: disputes
+
+      - name: balance_transactions
+        description: >
+          The balance transactions the event stream carried *expanded*, which only dispute
+          payloads do. Small, and the only place the stream states an amount of settled money
+          rather than an id, which is what makes it worth comparing against the list.
+        columns:
+          - name: balance_transaction_id
+            tests: [unique, not_null]

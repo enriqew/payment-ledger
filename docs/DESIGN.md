@@ -272,10 +272,34 @@ value, no model in gold contains a division, and there is a test for both.
 
 `gold.daily_close` records what the report said on the day it closed. When a late event changes a
 closed day, the close is kept and a restatement row is written: what the day said then, what it
-says now, and which events caused the difference. Iceberg snapshots make the "then" recoverable.
+says now, and which movements caused the difference.
 
 This is the honest answer to whether the gold layer is incremental. It is not. It is recomputed,
 and the record of what changed is itself a table.
+
+**Built in phase 5, and one thing about it changed on contact.** The plan said Iceberg snapshots
+would make the "then" recoverable, which is true and is not usable from a model: time travel needs
+a snapshot id as a literal, so "the close before this one" is not something SQL can ask for.
+`gold.daily_close_log` is an appended table instead, one full close per run, which anybody can
+query without knowing which snapshot to name. It is the only table in gold that is appended rather
+than recomputed, and it has no incremental filter on purpose: a run that changed nothing still
+writes its close, because "this day was looked at again and did not move" is a different statement
+from "nobody looked".
+
+`gold.restatements` compares the last two closes. Every day the late arrival touched is a row, not
+only the day it landed on, because money that appears on the third is pending from the third and
+available from the tenth and changes the closing balance of every day after it. What is kept short
+is the attribution: each row names the movements that started or matured on **that** day, so the
+table shows where the movement entered instead of repeating the same ids down the column.
+
+**The cause is attributed by arrival, not by amount.** `silver.balance_transaction_list` stamps
+`loaded_at` when a movement first reaches the pipeline and keeps it across refetches, so what
+counts as late is a fact rather than a guess. Matching a difference to the transaction whose net
+happens to equal it looks convincing and picks the wrong one as soon as two are the same size.
+
+A restatement is not a failure and does not fail the build. What fails the build is a day that
+moved by something other than what arrived late (`assert_every_restatement_is_explained`), because
+that is the ledger rewriting a published figure for a reason nothing accounts for.
 
 ## 6. The six failures
 
@@ -289,6 +313,36 @@ Each is injected deliberately by the chaos module and each must be caught.
 | Dropped event | A gap against the processor's balance transaction list |
 | Currency and rounding | Integer minor units end to end; FX and rounding drift accounted for, not absorbed |
 | Reversal | Signed postings; a won dispute returns the amount and keeps the fee |
+
+Until phase 5 that table was six claims. Each row is now a scenario in `src/payment_ledger/chaos.py`
+and a test keeps the two lists equal, so a row nobody wired up fails the build.
+
+**A scenario perturbs one side and not the other.** The generator emits three artifacts: the
+webhook stream, the balance transaction list, and the balance the processor reports. A scenario
+damages one and leaves the rest alone, which is what makes a divergence appear where a real one
+would. Damaging all three consistently produces a run that is wrong and reconciles, which is
+exactly the failure nobody catches.
+
+**The expectation is written before the run and checked both ways.** Every scenario declares which
+dbt tests must fail and, where the injection determines it, on exactly how many rows; plus what has
+to be true of the row counts at every layer. The verdict fails when a detection did not fire *and*
+when a test fired that no scenario asked for. A suite that only checks "something went wrong" says
+nothing about whether the right thing went wrong.
+
+**A namespace per arm, and nothing dropped between them.** Each scenario runs into
+`<scenario>_bronze`, `<scenario>_silver` and `<scenario>_gold`, with a topic and a checkpoint of its
+own, so when the suite finishes the damaged run and the run it was measured against are both in the
+catalog and a difference of nine rows is a query rather than a claim. The one thing that would make
+the whole exercise worthless is an arm reading another arm's tables, so that is a test rather than
+a habit.
+
+**Two of the six are not caught by an invariant, and that is the finding.** A dropped webhook does
+not move a cent: the ledger posts from the balance transaction list, so every entry balances and
+the day reconciles exactly. What is missing is the business's record of what the money was for, and
+only a comparison between the two inputs can see it. That comparison is `gold.coverage_gaps`, which
+also catches the opposite direction: a movement the stream carried expanded inside a dispute
+payload that the list does not have. And a late arrival is not a defect at all. It is the normal
+condition of a payment processor, and what it must produce is a restatement rather than a failure.
 
 ## 7. This repository is public
 
@@ -357,13 +411,23 @@ came out of a measured run, with that run's configuration beside it.
 | 2 | Generator with the calendar simulation; silver dedup and typing | done |
 | 3 | dbt ledger models and the invariants as failing tests | done |
 | 4 | Reconciliation against the processor balance | done |
-| 5 | Chaos suite, one Airflow DAG, one Iceberg namespace per scenario | **next** |
-| 6 | Export contract and the artifacts a dashboard reads | not started |
+| 5 | Chaos suite, one Airflow DAG, one Iceberg namespace per scenario | done |
+| 6 | Export contract and the artifacts a dashboard reads | **next** |
 | 7 | Write-up | not started |
 
 Services appear in `docker/docker-compose.yml` with the phase that needs them. Kafka, MinIO, the
-Iceberg REST catalog, Spark, a Spark Thrift server and dbt are there now; Airflow arrives with
-phase 5, pinned when there is a job to run against it.
+Iceberg REST catalog, Spark, a Spark Thrift server, dbt and Airflow are all there now.
+
+Phase 5 said "one namespace per scenario" and built three: `<scenario>_bronze`, `<scenario>_silver`
+and `<scenario>_gold`. The layers are namespaces here, and collapsing an arm into one of them would
+have meant renaming a table to avoid `bronze.events` colliding with `silver.events`, which is a
+worse trade than a prefix.
+
+The other correction phase 5 made to this plan was `DROP NAMESPACE ... CASCADE`, which is the
+obvious way to take an arm back to nothing and does not work: Spark passes the cascade to the
+catalog, the Iceberg REST catalog ignores it, and the drop comes back as
+`NamespaceNotEmptyException`. The reset drops the tables one by one, and it reads which tables
+those are out of the `make reset` recipe rather than keeping a second list beside it.
 
 Two more things surfaced the same way, in phase 2, and both are the kind that only appear when a
 job runs. Iceberg's streaming source writes its initial offset into the Spark checkpoint using the

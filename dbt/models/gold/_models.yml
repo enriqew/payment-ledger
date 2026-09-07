@@ -80,6 +80,47 @@ models:
         description: the difference left once the itemised causes are taken out
         tests: [not_null]
 
+  - name: daily_close_log
+    description: >
+      What the close said, each time it was taken. The one table in gold that is appended rather
+      than recomputed, because a close is a statement made on a date and the corrected figure on
+      its own is not an honest record of one.
+    columns:
+      - name: run_id
+        tests: [not_null]
+      - name: closed_at
+        tests: [not_null]
+      - name: close_date
+        tests: [not_null]
+
+  - name: restatements
+    description: >
+      Days that closed and then changed, with what they said then, what they say now, and the
+      movements that arrived after the close to make the difference. Empty when nothing was
+      restated, and on the first close of a fresh lakehouse.
+    columns:
+      - name: close_date
+        tests: [not_null]
+      - name: fully_explained_by_what_arrived_late
+        tests: [not_null]
+
+  - name: coverage_gaps
+    description: >
+      Where the webhook stream and the processor's balance transaction list disagree about what
+      happened. One row per movement either side is missing, in whichever direction. Empty on a
+      healthy run, which is the statement that the two inputs agree.
+    columns:
+      - name: finding
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["source_missing_from_the_stream", "transaction_missing_from_the_list"]
+      - name: balance_transaction_id
+        tests: [not_null]
+      - name: net
+        tests: [not_null]
+
   - name: reconciliation_items
     description: >
       For every day the reconciliation cannot explain, the balance transactions that touched it.

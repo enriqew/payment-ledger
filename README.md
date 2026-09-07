@@ -29,19 +29,20 @@ Full design: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Status
 
-**Phase 4 of 7.** A run of any size goes end to end and comes out as a double-entry ledger that
-has been weighed against the processor's own reported balance: the generator simulates N
-transactions from the captured shapes, the producer puts them on Kafka, Spark Structured Streaming
-lands every delivery in `bronze.events`, silver deduplicates that into one row per event and one
-per charge, refund and dispute, and dbt builds the postings, the trial balance, the daily close and
-the reconciliation, with all four invariants as tests that stop the build. The chaos suite is next.
-The roadmap is at the bottom of `docs/DESIGN.md`, and this line is updated as phases land rather
-than in advance.
+**Phase 5 of 7.** A run of any size goes end to end and comes out as a double-entry ledger that has
+been weighed against the processor's own reported balance: the generator simulates N transactions
+from the captured shapes, the producer puts them on Kafka, Spark Structured Streaming lands every
+delivery in `bronze.events`, silver deduplicates that into one row per event and one per charge,
+refund and dispute, and dbt builds the postings, the trial balance, the daily close and the
+reconciliation, with all four invariants as tests that stop the build. The six failures in the
+table above are now injected on purpose, one namespace per scenario, and each one is checked
+against what it said it would do: `make chaos`. Next is the export contract. The roadmap is at the
+bottom of `docs/DESIGN.md`, and this line is updated as phases land rather than in advance.
 
 ## Stack
 
 Kafka into Spark Structured Streaming into Apache Iceberg (bronze and silver), dbt for the gold
-ledger, Airflow for the daily close. Everything runs locally on Docker Compose against MinIO, so a
+ledger, Airflow for the chaos suite. Everything runs locally on Docker Compose against MinIO, so a
 full run costs nothing and there is no always-on service.
 
 ## Requirements
@@ -284,6 +285,80 @@ docker compose -f docker/docker-compose.yml up -d
 Services appear in the stack with the phase that needs them, pinned when there is a job to run
 against them rather than guessed at in advance. Spark arrives in phase 1, Airflow in phase 5.
 
+## The chaos suite
+
+The six failures at the top of this README were six claims until phase 5. Each is now a scenario
+that damages a real run, takes it through the whole pipeline, and is judged against what it said
+would happen.
+
+```bash
+make scenarios                          # the six, and what is supposed to catch each
+make chaos                              # all seven arms, injected, run and judged
+make chaos-one SCENARIO=dropped_event   # one of them
+```
+
+**A scenario perturbs one side and not the other.** The generator emits three artifacts: the
+webhook stream, the balance transaction list, and the balance the processor reports. A scenario
+damages one and leaves the rest alone, which is what makes a divergence appear where a real one
+would. Damaging all three consistently produces a run that is wrong and reconciles, which is the
+failure nobody catches.
+
+**The expectation is written before the run, and checked both ways.** Every scenario declares which
+dbt tests must fail and, where the injection determines it, on exactly how many rows. The verdict
+fails when a detection did not fire, and equally when a test fires that no scenario asked for. A
+suite that only checks "something went wrong" says nothing about whether the right thing did.
+
+This is one `N=1000` run, seed 1, all seven arms:
+
+| Arm | What it does to the run | What the build did |
+|---|---|---|
+| baseline | nothing | 41 tests pass. 4602 events, 5608 postings, trial balance 0, 28,877,624 available |
+| Duplicate delivery | redelivers 230 events, later in the stream | bronze holds 4832 deliveries of 4602 events, silver holds 4602, the ledger is unchanged to the posting. Nothing fails |
+| Out-of-order arrival | reverses arrival order end to end | every count identical to the baseline, including the checksum over the dates the charges carry. Nothing fails |
+| Dropped event | silences 20 charges, 84 events | `assert_the_stream_saw_every_source` **FAIL 21**. 980 charges in silver, and the ledger is identical to the baseline: 5608 postings, reconciliation clean |
+| Late arrival after the close | holds 23 movements and their 64 events back to a second wave | nothing fails. Two closes taken, **60 days restated**, all 60 explained by what arrived late, and the final books equal the undamaged run exactly |
+| Currency and rounding | adds one minor unit to the net of 20 charges | `assert_entries_balance` **FAIL 20**, trial balance 20 instead of 0, and the daily close and the reconciliation are **never published** |
+| Reversal | drops 3 won-dispute reversals from the list | `assert_the_list_holds_every_expanded_transaction` **FAIL 3** and `assert_no_unexplained_difference` **FAIL 43**. Every entry still balances and the trial balance is still 0 |
+
+**A namespace per arm, and nothing dropped between them.** Each scenario runs into
+`<scenario>_bronze`, `<scenario>_silver` and `<scenario>_gold`, with a Kafka topic and a Spark
+checkpoint of its own. When the suite finishes, the damaged run and the run it was measured against
+are both in the catalog, so a difference of twenty charges is a query rather than a claim.
+
+**Two of the six are not caught by an invariant, and that is the finding.** A dropped webhook does
+not move a cent. The ledger posts from the balance transaction list, so every entry balances and
+every day reconciles exactly, and what is missing is the business's own record of what the money
+was for. Only a comparison between the two inputs sees it, which is `gold.coverage_gaps`. And a
+late arrival is not a defect at all: it is the normal condition of a payment processor, and what it
+has to produce is a restatement rather than a failure.
+
+**What a restatement looks like.** On the late arrival arm, the third of January moved from
+4,045,390 pending to 4,044,210 and names the one movement that landed after it closed. The fourth
+of January moved by the same 1,180 and names nothing, which is the point: a balance is cumulative,
+so the day the number entered is the day worth reading and every day after it inherits the shift.
+A day that moved by something other than what arrived late fails the build.
+
+### The same suite as a DAG
+
+```bash
+LEDGER_HOST_ROOT="$(pwd)" make airflow   # on Windows: pwd -W
+make dag
+```
+
+`airflow/dags/chaos_suite.py` lays the same seven arms out as 77 tasks: inject, publish, the five
+Spark jobs, the ledger, the measurement and the verdict, per wave. It is not a second
+implementation. The steps come from the same functions the command line uses, and what differs is
+only how a step becomes a running container.
+
+Scheduling is not what it is for. One machine runs one Spark job at a time and nothing here runs on
+a clock. What the DAG has is a task boundary around every step, so a suite that goes wrong says
+which step went wrong instead of leaving it at the end of a log.
+
+The scheduler starts sibling containers through the Docker socket, which is why it has to be told
+where the repository lives **on the host**: the daemon binds host paths and knows nothing about the
+inside of the Airflow container. That is the honest cost of orchestrating containers from within
+one, and it is the reason the service definitions appear a second time inside the DAG.
+
 ## Capturing real test-mode events
 
 This is the step that gives every schema in the pipeline a real payload behind it.
@@ -335,6 +410,8 @@ src/payment_ledger/
   redact.py        what may be committed: the live-mode guard and the redaction rules
   producer.py      fixtures or a generated run, onto the kafka topic
   generator.py     simulated volume, replayed from the captured shapes
+  chaos.py         the six failures as inputs, and the verdict on a run that met one
+  chaos_run.py     each scenario through the pipeline, into a lakehouse of its own
 scripts/
   audit_publishable.py   the same rules, over every tracked file
 docker/            the local stack
@@ -344,12 +421,13 @@ jobs/
   silver_entities.py the event log into one row per charge, refund and dispute
   balance_transaction_list.py  what /v1/balance_transactions returns, which webhooks do not carry
   reported_balance.py          the balance the processor reports, which is the anchor
-dbt/               the gold ledger: postings, trial balance, daily close, and the invariants
+  chaos_report.py              what one arm of the suite ended up holding, as a count per table
 conf/              spark defaults, iceberg catalog wiring, log4j
 dbt/               gold ledger models and the invariant tests   (phase 3)
-airflow/dags/      ledger_daily, ledger_chaos                   (phase 5)
+airflow/dags/      chaos_suite, the same seven arms as a DAG    (phase 5)
 fixtures/events/   captured test-mode payloads, redacted and committed
 data/generated/    what a run writes; reproducible from its seed, so never committed
+data/chaos/        what each scenario was given, and the verdict on what came back
 tests/
 ```
 

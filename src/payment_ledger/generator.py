@@ -490,40 +490,7 @@ class Simulation:
         transactions rather than from the events, because if both sides came from the same walk
         the comparison in phase 4 would prove nothing at all.
         """
-        pending: dict[tuple[int, str], int] = defaultdict(int)
-        available: dict[tuple[int, str], int] = defaultdict(int)
-
-        for txn in self.balance_transactions:
-            pending[(txn["created"] // DAY, txn["currency"])] += txn["net"]
-            available[(txn["available_on"] // DAY, txn["currency"])] += txn["net"]
-
-        touched = list(pending) + list(available)
-        if not touched:
-            return []
-        # Every day in the range, not only the ones with movement. A day the processor reports a
-        # balance on and the ledger has no row for is a gap in the reconciliation, not a day off.
-        days = range(min(day for day, _ in touched), max(day for day, _ in touched) + 1)
-        currencies = sorted({cur for _, cur in touched})
-
-        rows: list[dict] = []
-        running_pending = defaultdict(int)
-        running_available = defaultdict(int)
-        for day in days:
-            for currency in currencies:
-                # Money is pending from the day it is created until the day it becomes available,
-                # so a day's pending balance is everything created up to it minus everything that
-                # has already matured.
-                running_pending[currency] += pending[(day, currency)] - available[(day, currency)]
-                running_available[currency] += available[(day, currency)]
-                rows.append(
-                    {
-                        "date": date.fromtimestamp(day * DAY).isoformat(),
-                        "currency": currency,
-                        "pending": running_pending[currency],
-                        "available": running_available[currency],
-                    }
-                )
-        return rows
+        return walk_daily_balance(self.balance_transactions)
 
     def _emit_daily_balance(self) -> None:
         """One `balance.available` event per day, carrying what the processor would report."""
@@ -549,6 +516,54 @@ class Simulation:
                 )
 
             self._emit("balance.available", when, patch)
+
+
+def walk_daily_balance(transactions: list[dict]) -> list[dict]:
+    """What the processor would report, per day and per currency, from a set of movements.
+
+    A module level function rather than a method because phase 5 needs to walk a *subset*: a
+    scenario that holds an event back until after the day closed has to say what the processor
+    reported on the day it closed, which is the balance without the transaction that had not
+    happened yet. Same walk, fewer movements.
+    """
+    pending: dict[tuple[int, str], int] = defaultdict(int)
+    available: dict[tuple[int, str], int] = defaultdict(int)
+
+    for txn in transactions:
+        pending[(txn["created"] // DAY, txn["currency"])] += txn["net"]
+        available[(txn["available_on"] // DAY, txn["currency"])] += txn["net"]
+
+    touched = list(pending) + list(available)
+    if not touched:
+        return []
+    # Every day in the range, not only the ones with movement. A day the processor reports a
+    # balance on and the ledger has no row for is a gap in the reconciliation, not a day off.
+    days = range(min(day for day, _ in touched), max(day for day, _ in touched) + 1)
+    currencies = sorted({cur for _, cur in touched})
+
+    rows: list[dict] = []
+    running_pending: dict[str, int] = defaultdict(int)
+    running_available: dict[str, int] = defaultdict(int)
+    for day in days:
+        for currency in currencies:
+            # Money is pending from the day it is created until the day it becomes available,
+            # so a day's pending balance is everything created up to it minus everything that
+            # has already matured.
+            running_pending[currency] += pending[(day, currency)] - available[(day, currency)]
+            running_available[currency] += available[(day, currency)]
+            rows.append(
+                {
+                    # Explicitly UTC. `date.fromtimestamp` reads the machine's timezone, which
+                    # would date every row of the anchor a day earlier for anyone west of
+                    # Greenwich while the ledger side stays in UTC, and the reconciliation would
+                    # fail on their laptop and nowhere else.
+                    "date": datetime.fromtimestamp(day * DAY, UTC).date().isoformat(),
+                    "currency": currency,
+                    "pending": running_pending[currency],
+                    "available": running_available[currency],
+                }
+            )
+    return rows
 
 
 def _public(txn: dict | None) -> dict | None:

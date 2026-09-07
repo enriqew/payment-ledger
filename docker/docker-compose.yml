@@ -213,12 +213,62 @@ services:
     build:
       context: ..
       dockerfile: docker/dbt.Dockerfile
+    # Named rather than left to Compose, because Airflow starts this image itself and a task that
+    # guessed the name from the project would break the moment the directory was renamed.
+    image: payment-ledger/dbt:1.11.0
     profiles: ["jobs"]
     depends_on:
       spark-thrift:
         condition: service_healthy
     volumes:
       - ../dbt:/opt/payment-ledger/dbt
+
+  # Arrives with phase 5, the first phase with something worth scheduling. Single node, SQLite and
+  # a sequential executor: the DAG starts containers that each take a whole machine for a minute,
+  # so an executor that could run two of them at once would only make them fight.
+  #
+  # It starts containers rather than running the work itself, which is why the Docker socket is
+  # here. That also means the paths it hands the daemon are *host* paths, not paths inside this
+  # container, so the repository's location on the host has to be passed in. There is no way around
+  # it: a sibling container is started by the same daemon the host talks to, and that daemon knows
+  # nothing about this container's filesystem.
+  airflow:
+    build:
+      context: ..
+      dockerfile: docker/airflow.Dockerfile
+    image: payment-ledger/airflow:2.10.4
+    container_name: pl-airflow
+    profiles: ["orchestration"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      # The DAG runs the working tree rather than an installed copy.
+      PYTHONPATH: /opt/payment-ledger/src
+      # The producer step runs inside this container, so the broker is reachable by service name
+      # rather than through the port published to the host.
+      KAFKA_BOOTSTRAP: kafka:19092
+      # Where this repository lives on the *host*, which is what the daemon needs in order to bind
+      # the working tree into a sibling container. Left empty rather than declared required with
+      # `:?`, which fails the interpolation of the whole file: every `docker compose run` in the
+      # project, for services that have nothing to do with Airflow, would stop working because a
+      # variable for this one was unset. The DAG says so itself when it is missing.
+      LEDGER_HOST_ROOT: ${LEDGER_HOST_ROOT:-}
+      LEDGER_NETWORK: payment-ledger_default
+    # Root because the socket is root owned on a stock Docker Desktop install, and a scheduler that
+    # cannot reach the daemon has nothing to schedule.
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../airflow/dags:/opt/airflow/dags:ro
+      # The whole tree, writable, because a scenario writes its inputs and its verdict into data/
+      # and reads the ledger's own reset list out of the Makefile.
+      - ..:/opt/payment-ledger
+    command: ["standalone"]
 
 volumes:
   kafka-data:

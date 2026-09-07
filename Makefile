@@ -34,6 +34,9 @@ DROP_TABLES := \
   DROP TABLE IF EXISTS lakehouse.gold.daily_close; \
   DROP TABLE IF EXISTS lakehouse.gold.reconciliation; \
   DROP TABLE IF EXISTS lakehouse.gold.reconciliation_items; \
+  DROP TABLE IF EXISTS lakehouse.gold.coverage_gaps; \
+  DROP TABLE IF EXISTS lakehouse.gold.daily_close_log; \
+  DROP TABLE IF EXISTS lakehouse.gold.restatements; \
   DROP TABLE IF EXISTS lakehouse.silver.reported_balance;
 
 .DEFAULT_GOAL := help
@@ -154,6 +157,42 @@ reset:  ## Start over: drop the topic, the checkpoints, every table and their fi
 	  -c "mc alias set l http://minio:9000 minioadmin minioadmin >/dev/null && \
 	      mc rm --recursive --force --quiet \
 	        l/warehouse/bronze l/warehouse/silver l/warehouse/gold || true"
+
+# --- phase 5: the chaos suite --------------------------------------------------------------------
+# The suite itself is a module rather than a wall of recipe, for a reason worth stating: the steps
+# it submits can then be read by a test. Every table an arm touches has to carry that arm's name,
+# and getting that wrong turns a chaos suite into six runs of the same undamaged pipeline nodding
+# at each other. That is checked in `tests/test_chaos_run.py`, not hoped for here.
+
+.PHONY: scenarios
+scenarios:  ## List the six failures and what is supposed to catch each one
+	$(PY) -m payment_ledger.chaos list
+
+.PHONY: chaos
+chaos: chaos-reset generate  ## Inject the six failures and check each was caught, and only it
+	$(PY) -m payment_ledger.chaos_run --seed $(SEED)
+
+.PHONY: chaos-one
+chaos-one:  ## One arm end to end, into namespaces of its own (SCENARIO=dropped_event)
+	$(PY) -m payment_ledger.chaos_run --only $(SCENARIO) --seed $(SEED)
+
+.PHONY: chaos-reset
+chaos-reset:  ## Drop what the suite wrote: its topics, checkpoints, namespaces, files and inputs
+	$(PY) -m payment_ledger.chaos_run --reset
+
+# The scheduler starts sibling containers through the docker socket, so what it hands the daemon
+# are host paths and it has to be told where the tree is. On Windows this needs a Windows path:
+# `LEDGER_HOST_ROOT=$$(pwd -W) make airflow` in Git Bash.
+.PHONY: airflow
+airflow:  ## Start the scheduler, with the chaos suite as a DAG, on localhost:8080
+	LEDGER_HOST_ROOT="$${LEDGER_HOST_ROOT:-$(CURDIR)}" \
+	  $(COMPOSE) --profile orchestration up -d airflow
+	@echo "airflow: http://localhost:8080  user admin"
+	@echo "password: docker exec pl-airflow cat /opt/airflow/standalone_admin_password.txt"
+
+.PHONY: dag
+dag:  ## Run the whole suite through Airflow instead of through the loop
+	$(COMPOSE) exec airflow airflow dags trigger chaos_suite
 
 .PHONY: sql
 sql:  ## Open spark-sql against the lakehouse catalog
