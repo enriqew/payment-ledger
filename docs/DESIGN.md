@@ -122,9 +122,33 @@ the cash side of the ledger, which means that side is designed and not yet evide
 test bank account to the sandbox closes it, and until it is closed nothing here should be read as
 if it were.
 
+**A webhook does not carry the money.** The captured payloads settle this and it changes what the
+pipeline has to be. `charge.updated` carries `balance_transaction` as an **id**, not as an object,
+so the fee, the net and `available_on` are nowhere in the event stream. Only a dispute embeds its
+balance transactions expanded, which is how the fee of 2460 on a lost one is visible at all. A
+ledger built on the webhook stream alone therefore cannot compute a fee, no matter how carefully it
+reads the events: it has to join them against the balance transaction list. That join is not an
+optimisation, it is the reason the reconciliation in section 4 has two sides.
+
 **Volume comes from a generator.** `stripe trigger` yields a handful of events, not a stream. The
 generator replays the captured shapes across a simulated calendar at configurable volume, with a
 chaos module that injects failures on demand. It is the only synthetic part of the system.
+
+Every generated event is a **deep copy of a captured payload** with the fields carrying money,
+identity and time overwritten. Nothing is constructed from a reading of the API reference, because
+a payload written out of the documentation tests the reading rather than the API. The constants
+follow the same rule and are read off real payloads instead of off the pricing page: the usd
+settlement rate is the one that turns the captured 100 usd charge into its 86 eur balance
+transaction, the dispute fee is the 2000 plus 460 of VAT that the captured lost dispute itemises,
+and `available_on` is midnight UTC of the seventh day after, because that is what the captured
+payload does.
+
+**A run is reproducible and everything in it says it is simulated.** Transaction count, seed and
+calendar length are the whole input, and `run.json` records them beside a sha256 of each artifact,
+so the same three produce the same digests. That is what makes a chaos scenario in phase 5 a thing
+to replay rather than a thing that was observed once. Generated ids carry a `sim` infix,
+`description` reads `(simulated by payment-ledger generator)` and `livemode` stays false, so no
+artifact of a run can be mistaken for a captured payload or reported as production behaviour.
 
 **The reconciliation anchor is independent, not external.** This is the one place where the
 honest description is weaker than the appealing one, so it is worth being exact about.
@@ -267,7 +291,7 @@ came out of a measured run, with that run's configuration beside it.
 |---|---|---|
 | 0 | Scaffold, local stack, webhook capture into fixtures | done |
 | 1 | Kafka producer and Spark streaming into `bronze.events` | done |
-| 2 | Generator with the calendar simulation; silver dedup and typing | **next** |
+| 2 | Generator with the calendar simulation; silver dedup and typing | **generator done, silver next** |
 | 3 | dbt ledger models and the four invariants as failing tests | not started |
 | 4 | Reconciliation against the processor balance | not started |
 | 5 | Chaos suite, one Airflow DAG, one Iceberg namespace per scenario | not started |

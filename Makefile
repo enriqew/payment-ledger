@@ -14,6 +14,12 @@ ifeq ($(wildcard $(STRIPE)),)
 STRIPE  := stripe
 endif
 
+# A generated run is fully described by these three. Override on the command line:
+#   make e2e N=100000 SEED=7 DAYS=90
+N     ?= 1000
+SEED  ?= 1
+DAYS  ?= 30
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -91,6 +97,28 @@ produce:  ## Publish the captured fixtures to kafka (needs no stripe account)
 .PHONY: bronze
 bronze:  ## Drain the topic into bronze.events; spark runs in a container, the host needs no jvm
 	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/bronze_events.py
+
+.PHONY: generate
+generate:  ## Simulate N transactions from the captured shapes (N=1000 SEED=1 DAYS=30)
+	$(PY) -m payment_ledger.generator -n $(N) --seed $(SEED) --days $(DAYS)
+
+.PHONY: e2e
+e2e: reset generate  ## Generate N transactions and take them all the way into bronze
+	$(PY) -m payment_ledger.producer --events data/generated/events.jsonl
+	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/bronze_events.py
+
+# Four pieces of state, and forgetting any one of them makes the next run lie: the topic still
+# holds the last run's events, the checkpoint still says they were consumed, the catalog still
+# lists the table, and the bucket still holds its files. `DROP TABLE ... PURGE` is deliberately
+# not used: against MinIO it logs a failure per object and leaves them behind, so the files are
+# removed where they actually live.
+.PHONY: reset
+reset:  ## Start over: drop the topic, the checkpoint, the bronze table and its files
+	-$(COMPOSE) exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 	  --delete --topic stripe.events.raw
+	$(COMPOSE) up -d --force-recreate kafka-init
+	$(COMPOSE) run --rm --entrypoint /bin/sh spark 	  -c "rm -rf /opt/payment-ledger/checkpoints/bronze_events"
+	$(COMPOSE) run --rm --entrypoint /opt/spark/bin/spark-sql spark 	  -e "DROP TABLE IF EXISTS lakehouse.bronze.events"
+	$(COMPOSE) run --rm --entrypoint /bin/sh minio-init 	  -c "mc alias set l http://minio:9000 minioadmin minioadmin >/dev/null && 	      mc rm --recursive --force --quiet l/warehouse/bronze || true"
 
 .PHONY: sql
 sql:  ## Open spark-sql against the lakehouse catalog

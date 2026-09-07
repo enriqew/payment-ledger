@@ -29,10 +29,12 @@ Full design: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Status
 
-**Phase 1 of 7.** The captured payloads reach Kafka and land in an Iceberg `bronze.events` table
-on MinIO, keyed by the charge they are about and keeping every delivery including the duplicates.
-Silver, the ledger and the reconciliation do not exist yet. The roadmap is at the bottom of
-`docs/DESIGN.md`, and this line is updated as phases land rather than in advance.
+**Phase 2 of 7, half of it.** A run of any size goes end to end: the generator simulates N
+transactions from the captured shapes, the producer puts them on Kafka, and Spark Structured
+Streaming lands them in an Iceberg `bronze.events` table on MinIO. The silver half of phase 2, the
+deduplication and typing, is next, and the ledger and the reconciliation after that. The roadmap is
+at the bottom of `docs/DESIGN.md`, and this line is updated as phases land rather than in
+advance.
 
 ## Stack
 
@@ -58,11 +60,11 @@ produces the volume, so a clone is enough. An account is needed only to refresh 
 make install          # host venv for the receiver, the producer, the generator and the tests
 make check            # audit, lint and tests, the same three CI runs
 
-make up               # kafka, minio, iceberg rest catalog
+make up               # kafka, minio, iceberg rest catalog, spark
 make ps               # check everything is healthy
 
-make produce          # the committed fixtures onto the kafka topic
-make bronze           # drain the topic into bronze.events
+make e2e              # 1000 simulated transactions, all the way into bronze
+make e2e N=100000 SEED=7 DAYS=90
 
 make down             # stop, keeping volumes; make clean drops them too
 ```
@@ -72,11 +74,54 @@ JVM or a matching Python. The first run downloads the Iceberg and Kafka connecto
 volume; every run after that is offline. It drains what is on the topic and exits, and the
 checkpoint means running it twice does not write the same offsets twice.
 
-Over the 59 payloads captured in phase 0, the first run writes 59 rows. Run `make produce` again
-and the second `make bronze` reports 118 deliveries of 59 distinct events, which is the
+The pieces are also separate targets: `make generate` simulates a run, `make produce` publishes one
+(or the committed fixtures, with no argument), `make bronze` drains the topic, and `make reset`
+throws away everything a previous run left behind.
+
+Over the 59 payloads captured in phase 0, `make produce && make bronze` writes 59 rows. Run
+`make produce` a second time and bronze reports 118 deliveries of 59 distinct events, which is the
 duplicate-delivery failure showing up as a number instead of a claim. Bronze keeps both on
 purpose; collapsing them is silver's job and the gap between the two counts is how the duplicate
 is detected at all.
+
+## Running it at any size
+
+The captured payloads give the pipeline real schemas and 59 events. Volume comes from the
+generator, which deep-copies those captured payloads and overwrites the fields carrying money,
+identity and time. Nothing is built out of a reading of the API documentation, because a payload
+written from the docs tests the reading rather than the API.
+
+`make e2e` resets before it runs, so a run always starts from nothing: the topic, the streaming
+checkpoint, the bronze table and its files all go. Forget any one of them and the next run reports
+the previous one's numbers.
+
+A run is completely described by `N`, `SEED` and `DAYS`, and `data/generated/run.json` records
+those three beside a sha256 of each artifact. The same three inputs produce the same digests, which
+is what makes a failure scenario something to replay rather than something that was seen once.
+
+**Everything the generator produces is simulated and says so.** Ids carry a `sim` infix
+(`ch_sim000000000042`), `description` reads `(simulated by payment-ledger generator)`, and
+`livemode` stays false. No figure from this data may be reported as production behaviour.
+
+At `N=1000` over 30 days, one run produces:
+
+| Artifact | Rows | What it is |
+|---|---|---|
+| `events.jsonl` | 4602 | the webhook stream: 1000 charges, 92 of them refunded, 43 disputed |
+| `balance_transactions.jsonl` | 1152 | what `/v1/balance_transactions` would return |
+| `daily_balance.jsonl` | 62 | the balance the processor reports, per day and currency |
+
+**The second and third artifacts are the interesting ones.** The captured payloads make something
+plain that a schema document would not: a webhook does not carry the money. `charge.updated` carries
+`balance_transaction` as an *id*, so the fee, the net and `available_on` are not in the event stream
+at all, and only a dispute embeds its balance transactions expanded. A ledger built on webhooks
+alone cannot compute a fee. The pipeline has to join the event stream against the balance
+transaction list, and phase 4 reconciles the result against a daily balance walked by different
+code over the same simulated money.
+
+No timing is quoted here, deliberately. The subject of this project is correctness under failure,
+and a wall clock off a laptop container invites exactly the reading the design's reporting rules
+refuse.
 
 `cp .env.example .env` only if you want to override a default. Nothing in it is required.
 
@@ -141,7 +186,8 @@ src/payment_ledger/
   stripe_cli.py    finding the cli, its signing secret, and the listener subprocess
   capture.py       the receiver: verify, write fixture, log
   redact.py        what may be committed: the live-mode guard and the redaction rules
-  producer.py      the captured fixtures onto the kafka topic
+  producer.py      fixtures or a generated run, onto the kafka topic
+  generator.py     simulated volume, replayed from the captured shapes
 scripts/
   audit_publishable.py   the same rules, over every tracked file
 docker/            the local stack
@@ -151,6 +197,7 @@ conf/              spark defaults, iceberg catalog wiring, log4j
 dbt/               gold ledger models and the invariant tests   (phase 3)
 airflow/dags/      ledger_daily, ledger_chaos                   (phase 5)
 fixtures/events/   captured test-mode payloads, redacted and committed
+data/generated/    what a run writes; reproducible from its seed, so never committed
 tests/
 ```
 

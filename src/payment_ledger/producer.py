@@ -31,10 +31,24 @@ def fixtures_root() -> Path:
     return root if root.is_absolute() else config.REPO_ROOT / root
 
 
-def iter_payloads(root: Path) -> Iterator[tuple[Path, bytes]]:
-    """Every captured event, in a stable order, as the exact bytes on disk."""
-    for path in sorted(root.rglob("*.json")):
-        yield path, path.read_bytes()
+def iter_payloads(source: Path) -> Iterator[tuple[str, bytes]]:
+    """Every event to publish, in a stable order, as the exact bytes it is stored as.
+
+    Two sources, one shape. A directory is the captured fixture tree, one file per event, which is
+    what phase 0 committed. A `.jsonl` file is a generated run, one event per line, which is where
+    volume comes from. Neither is parsed and re-serialised on the way out: what reaches the broker
+    is what is on disk.
+    """
+    if source.is_dir():
+        for path in sorted(source.rglob("*.json")):
+            yield str(path), path.read_bytes()
+        return
+
+    with source.open("rb") as handle:
+        for number, line in enumerate(handle, start=1):
+            line = line.strip()
+            if line:
+                yield f"{source}:{number}", line
 
 
 def ledger_key(event: dict) -> str:
@@ -97,13 +111,13 @@ def publish(
         if err is not None:
             failures.append(f"{msg.key()!r}: {err}")
 
-    for index, (path, raw) in enumerate(iter_payloads(root)):
+    for index, (where, raw) in enumerate(iter_payloads(root)):
         if limit is not None and index >= limit:
             break
         try:
             event = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise SystemExit(f"{path} is not valid json: {exc}") from exc
+            raise SystemExit(f"{where} is not valid json: {exc}") from exc
 
         counts[str(event.get("type", "unknown"))] += 1
         if producer is None:
@@ -140,6 +154,12 @@ def main(argv: list[str] | None = None) -> int:
         default=config.setting("KAFKA_TOPIC", DEFAULT_TOPIC),
         help="topic to publish to (default: %(default)s)",
     )
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=None,
+        help="the captured fixture directory, or a generated .jsonl (default: the fixtures)",
+    )
     parser.add_argument("--limit", type=int, default=None, help="publish at most this many")
     parser.add_argument(
         "--dry-run",
@@ -150,9 +170,13 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)-7s %(message)s")
 
-    root = fixtures_root()
+    root = args.events or fixtures_root()
     if not root.exists():
-        print(f"no fixtures at {root}. run `make capture` first, or clone the committed ones.")
+        print(
+            f"nothing to publish at {root}.\n"
+            "Either clone the committed fixtures, or generate a run with"
+            " `python -m payment_ledger.generator`."
+        )
         return 1
 
     counts = publish(
@@ -165,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
 
     total = sum(counts.values())
     where = "counted" if args.dry_run else f"published to {args.topic} on {args.bootstrap}"
-    print(f"{total} events {where}")
+    print(f"{total} events from {root.name} {where}")
     for event_type, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
         print(f"  {count:>4}  {event_type}")
     return 0
