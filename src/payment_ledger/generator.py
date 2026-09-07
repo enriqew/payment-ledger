@@ -281,7 +281,14 @@ class Simulation:
         self._emit("payment_intent.succeeded", created + 1, patch_intent)
         return None
 
-    def _refund(self, ids: dict, amount: int, currency: str, created: int) -> None:
+    def _refund(self, ids: dict, amount: int, currency: str, created: int, charged: int) -> None:
+        """`created` is when the refund happened; `charged` is when the charge it refunds did.
+
+        Two dates, and collapsing them is a real mistake with a quiet consequence. The charge
+        object rides along inside `charge.refunded`, and if its `created` is rewritten to the
+        refund's, the charge moves to the day it was refunded: it leaves the day it was actually
+        taken, changes what that day's report says, and does it without anything looking wrong.
+        """
         settled = settle(amount, currency)
         self._balance_transaction(
             id=ids["refund_txn"],
@@ -301,7 +308,7 @@ class Simulation:
         def patch_charge(obj):
             obj.update(
                 id=ids["charge"],
-                created=created,
+                created=charged,
                 amount=amount,
                 amount_captured=amount,
                 amount_refunded=amount,
@@ -450,7 +457,13 @@ class Simulation:
 
             roll = self.rng.random()
             if roll < REFUND_RATE:
-                self._refund(ids, amount, currency, created + self.rng.randrange(1, 6) * DAY)
+                self._refund(
+                    ids,
+                    amount,
+                    currency,
+                    created + self.rng.randrange(1, 6) * DAY,
+                    charged=created,
+                )
             elif roll < REFUND_RATE + DISPUTE_RATE:
                 # Weeks later on purpose. A dispute landing long after its charge is the late
                 # arrival the whole restatement design exists for, and it costs nothing to make

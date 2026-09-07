@@ -13,6 +13,11 @@ instead of by a guess about how long to remember, and the log is already the thi
 promises to be able to reproduce a closed period from. Same argument as the gold layer in section
 2 of the design, one layer earlier.
 
+**`created` is the entity's, not the last event's.** A charge is dated by when the charge was
+created, which is a different column from when the event that last touched it happened. Taking the
+latter would date a charge by the refund that arrived five days later, move it into a different
+partition, and quietly change what every daily report says about the day it was actually taken.
+
 `silver.balance_transactions` will look thin, and that is the finding rather than a bug. A webhook
 carries `balance_transaction` as an id; only a dispute embeds the object. Everything else is a
 reference the event stream cannot resolve, which is exactly what phase 4 joins against the balance
@@ -49,7 +54,7 @@ TBLPROPERTIES ('format-version' = '2', 'write.parquet.compression-codec' = 'zstd
 AS SELECT
     entity_id              AS charge_id,
     payment_intent_id,
-    created,
+    entity_created         AS created,
     amount,
     currency,
     status,
@@ -71,7 +76,7 @@ AS SELECT
     entity_id              AS refund_id,
     charge_id,
     payment_intent_id,
-    created,
+    entity_created         AS created,
     amount,
     currency,
     status,
@@ -91,7 +96,7 @@ AS SELECT
     entity_id              AS dispute_id,
     charge_id,
     payment_intent_id,
-    created,
+    entity_created         AS created,
     amount,
     currency,
     status,

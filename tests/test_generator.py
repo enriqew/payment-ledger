@@ -196,3 +196,32 @@ def test_a_dispute_lands_well_after_the_charge_it_contests(sim):
         opened = event["created"]
         charged = charges[event["data"]["object"]["charge"]]
         assert opened - charged >= 5 * g.DAY
+
+
+def test_a_charge_keeps_its_own_date_through_a_refund(sim):
+    """The charge object rides inside `charge.refunded`. If its `created` were rewritten to the
+    refund's, the charge would move to the day it was refunded, leave the day it was taken, and
+    change that day's report with nothing looking wrong."""
+    dates: dict[str, set[int]] = {}
+    for event in sim.events:
+        obj = event["data"]["object"]
+        if obj.get("object") == "charge":
+            dates.setdefault(obj["id"], set()).add(obj["created"])
+
+    drifting = {charge: seen for charge, seen in dates.items() if len(seen) > 1}
+    assert not drifting, f"{len(drifting)} charges are dated differently by different events"
+
+
+def test_a_refund_is_dated_after_the_charge_it_refunds(sim):
+    charged = {
+        e["data"]["object"]["id"]: e["data"]["object"]["created"]
+        for e in sim.events
+        if e["type"] == "charge.succeeded"
+    }
+    refunds = [e for e in sim.events if e["type"] == "refund.created"]
+    if not refunds:
+        pytest.skip("no refund fell out of this run")
+
+    for event in refunds:
+        obj = event["data"]["object"]
+        assert obj["created"] > charged[obj["charge"]]

@@ -167,6 +167,13 @@ its own.
 All 43 disputes are dated after the charge they contest, which is the ordering silver is built to
 respect and the arrival order it refuses to trust.
 
+**An entity is dated by itself, not by the last event that touched it.** The two are easy to
+collapse into one column and the consequence is quiet: a refunded charge would move to the day it
+was refunded, leave the day it was actually taken, and change what that day's report says with
+nothing looking wrong. It showed up as `max(created)` on `silver.charges` reading five days past a
+thirty day calendar, which is the kind of thing a query finds and a test suite does not, so there
+are now tests for both halves of it.
+
 `cp .env.example .env` only if you want to override a default. Nothing in it is required.
 
 **Without `make`** (Windows, mostly), every target is one line; `make help` lists them and the

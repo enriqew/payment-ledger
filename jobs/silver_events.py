@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS {table} (
     event_id               STRING    COMMENT 'the dedup key: one row per distinct event',
     event_type             STRING,
     created                TIMESTAMP COMMENT 'event time, which is what silver orders by',
+    entity_created         TIMESTAMP COMMENT 'when the charge itself was created, not the event',
     entity_type            STRING    COMMENT 'charge, refund, dispute, payment_intent, balance',
     entity_id              STRING,
     charge_id              STRING    COMMENT 'the charge this is ultimately about',
@@ -154,6 +155,10 @@ def typed(bronze):
         F.col("event_id"),
         F.col("event_type"),
         F.col("created"),
+        # Two different times, and conflating them is how a charge ends up dated by the refund
+        # that touched it five days later. The envelope's `created` is when the event happened;
+        # the object's is when the thing the event is about came into existence.
+        F.col("obj.created").cast("timestamp").alias("entity_created"),
         entity_type,
         F.col("obj.id").alias("entity_id"),
         charge_id,
