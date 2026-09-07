@@ -81,6 +81,23 @@ belongs to the day it arrived, because the question bronze answers is what was d
 Placing that dispute against the charge it contests is silver's problem, and it is a different
 problem: the arrival record must not pretend to know an ordering the transport never promised.
 
+**Deduplication is a MERGE on the key, not a watermarked `dropDuplicates`.** The streaming
+operator is the obvious tool and it is the wrong one, because a watermark forgets. Set it to an
+hour and a redelivery ninety minutes late passes through as a second event, and the ledger doubles
+a charge for a reason nobody will find looking at the ledger. Stripe retries a failed webhook for
+up to three days, so the watermark that would actually be safe is three days of state carried in a
+streaming shuffle. Merging against the key the table already holds is bounded by the table instead
+of by a guess about how late a retry can be, and it is correct at any lateness. Silver keeps the
+count of collapsed deliveries and both timestamps, so the evidence bronze holds is summarised
+rather than thrown away.
+
+**The entity projection is recomputed, not maintained.** `silver.events` is a log; the ledger wants
+one row per charge. A streaming "latest per key" has to hold state for every key it has ever seen,
+because the event that corrects one can arrive at any time and a dispute arrives weeks later by
+design. Recomputing the projection over a deduplicated log is bounded by the log, and the log is
+already the thing this project promises to be able to rebuild a closed period from. It is the same
+argument the gold layer makes, one layer earlier.
+
 **The topic is keyed by the charge, not by the event.** A dispute goes to the partition of the
 charge it disputes, so the whole life of one charge (succeeded, refunded, disputed, closed) lands
 in one partition and arrives in order. Nothing downstream is permitted to depend on that. Webhooks
@@ -291,8 +308,8 @@ came out of a measured run, with that run's configuration beside it.
 |---|---|---|
 | 0 | Scaffold, local stack, webhook capture into fixtures | done |
 | 1 | Kafka producer and Spark streaming into `bronze.events` | done |
-| 2 | Generator with the calendar simulation; silver dedup and typing | **generator done, silver next** |
-| 3 | dbt ledger models and the four invariants as failing tests | not started |
+| 2 | Generator with the calendar simulation; silver dedup and typing | done |
+| 3 | dbt ledger models and the four invariants as failing tests | **next** |
 | 4 | Reconciliation against the processor balance | not started |
 | 5 | Chaos suite, one Airflow DAG, one Iceberg namespace per scenario | not started |
 | 6 | Export contract and the artifacts a dashboard reads | not started |
@@ -301,6 +318,14 @@ came out of a measured run, with that run's configuration beside it.
 Services appear in `docker/docker-compose.yml` with the phase that needs them. Kafka, MinIO, the
 Iceberg REST catalog and Spark are there now; Airflow arrives with phase 5, pinned when there is a
 job to run against it.
+
+Two more things surfaced the same way, in phase 2, and both are the kind that only appear when a
+job runs. Iceberg's streaming source writes its initial offset into the Spark checkpoint using the
+**table's own FileIO**, and a checkpoint is a local path, so an `S3FileIO` catalog refuses it
+outright and the silver stream dies before its first batch; `ResolvingFileIO` picks per scheme and
+handles both. And the catalog caches table metadata for thirty seconds, which is longer than these
+jobs take, so a job that writes a table and then reports on it reads the snapshot from before its
+own write: silver reported zero rows into a table already holding four thousand six hundred.
 
 Worth recording, since the point of pinning a service before there is a job for it was to avoid
 guessing: phase 1 found that three things in that compose file had never actually run. The Iceberg

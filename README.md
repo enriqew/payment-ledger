@@ -29,12 +29,11 @@ Full design: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Status
 
-**Phase 2 of 7, half of it.** A run of any size goes end to end: the generator simulates N
-transactions from the captured shapes, the producer puts them on Kafka, and Spark Structured
-Streaming lands them in an Iceberg `bronze.events` table on MinIO. The silver half of phase 2, the
-deduplication and typing, is next, and the ledger and the reconciliation after that. The roadmap is
-at the bottom of `docs/DESIGN.md`, and this line is updated as phases land rather than in
-advance.
+**Phase 2 of 7.** A run of any size goes end to end: the generator simulates N transactions from
+the captured shapes, the producer puts them on Kafka, Spark Structured Streaming lands every
+delivery in `bronze.events`, and silver deduplicates that into one row per event and one row per
+charge, refund and dispute. The ledger and the reconciliation are next. The roadmap is at the
+bottom of `docs/DESIGN.md`, and this line is updated as phases land rather than in advance.
 
 ## Stack
 
@@ -75,8 +74,8 @@ volume; every run after that is offline. It drains what is on the topic and exit
 checkpoint means running it twice does not write the same offsets twice.
 
 The pieces are also separate targets: `make generate` simulates a run, `make produce` publishes one
-(or the committed fixtures, with no argument), `make bronze` drains the topic, and `make reset`
-throws away everything a previous run left behind.
+(or the committed fixtures, with no argument), `make bronze` drains the topic, `make silver`
+deduplicates and types it, and `make reset` throws away everything a previous run left behind.
 
 Over the 59 payloads captured in phase 0, `make produce && make bronze` writes 59 rows. Run
 `make produce` a second time and bronze reports 118 deliveries of 59 distinct events, which is the
@@ -122,6 +121,51 @@ code over the same simulated money.
 No timing is quoted here, deliberately. The subject of this project is correctness under failure,
 and a wall clock off a laptop container invites exactly the reading the design's reporting rules
 refuse.
+
+## What silver does with it
+
+Bronze holds deliveries. Silver holds events. `make silver` runs two jobs, and the split between
+them is the argument.
+
+`silver_events.py` streams `bronze.events` and merges into `silver.events` on `event_id`. Not a
+watermarked `dropDuplicates`, because a watermark forgets: set it to an hour and a redelivery
+ninety minutes late becomes a second event, and the ledger doubles a charge for a reason nobody
+will find looking at the ledger. Stripe retries a failed webhook for up to three days, so the
+watermark that would actually be safe is three days of state carried in a streaming shuffle.
+Merging on the key the table already holds is bounded by the table instead of by a guess about
+lateness, and it is correct however late a retry is. Each silver row keeps how many deliveries
+collapsed into it and when the first and last one arrived, so bronze's evidence is summarised
+rather than thrown away.
+
+`silver_entities.py` projects that log onto `silver.charges`, `silver.refunds`, `silver.disputes`
+and `silver.balance_transactions`, taking each entity's state from its latest event **by event
+time**. That clause is the out-of-order failure. The projection is recomputed rather than
+maintained, because a streaming "latest per key" has to remember every key it has ever seen (the
+event that corrects one arrives weeks later by design) while a recomputation is bounded by the log.
+
+At `N=1000`, one run lands:
+
+| Table | Rows |
+|---|---|
+| `bronze.events` | 4602 deliveries |
+| `silver.events` | 4602 events |
+| `silver.charges` | 1000 |
+| `silver.refunds` | 92 |
+| `silver.disputes` | 43 |
+| `silver.balance_transactions` | 60 |
+
+Publish the same run a second time and bronze goes to 9204 while silver stays at 4602, every row
+now reading `deliveries = 2`. That is the duplicate-delivery failure caught, as a query rather than
+a claim, and nothing downstream of silver can tell it happened except by asking.
+
+**`silver.balance_transactions` is deliberately thin, and the number is the point.** 1540 events
+name a balance transaction and the stream carries 60 of them expanded, because only a dispute
+embeds the object and everything else is an id. That gap is the size of the join phase 4 makes
+against the balance transaction list, and it is why the generator emits that list as an artifact of
+its own.
+
+All 43 disputes are dated after the charge they contest, which is the ordering silver is built to
+respect and the arrival order it refuses to trust.
 
 `cp .env.example .env` only if you want to override a default. Nothing in it is required.
 
@@ -192,7 +236,9 @@ scripts/
   audit_publishable.py   the same rules, over every tracked file
 docker/            the local stack
 jobs/
-  bronze_events.py the kafka topic into bronze.events, structured streaming
+  bronze_events.py   the kafka topic into bronze.events, structured streaming
+  silver_events.py   bronze deliveries into one row per event, merged on the key
+  silver_entities.py the event log into one row per charge, refund and dispute
 conf/              spark defaults, iceberg catalog wiring, log4j
 dbt/               gold ledger models and the invariant tests   (phase 3)
 airflow/dags/      ledger_daily, ledger_chaos                   (phase 5)

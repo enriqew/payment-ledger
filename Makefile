@@ -20,6 +20,15 @@ N     ?= 1000
 SEED  ?= 1
 DAYS  ?= 30
 
+# Named here rather than inline so the reset recipe stays one readable line per thing it drops.
+DROP_TABLES := \
+  DROP TABLE IF EXISTS lakehouse.bronze.events; \
+  DROP TABLE IF EXISTS lakehouse.silver.events; \
+  DROP TABLE IF EXISTS lakehouse.silver.charges; \
+  DROP TABLE IF EXISTS lakehouse.silver.refunds; \
+  DROP TABLE IF EXISTS lakehouse.silver.disputes; \
+  DROP TABLE IF EXISTS lakehouse.silver.balance_transactions;
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -103,9 +112,15 @@ generate:  ## Simulate N transactions from the captured shapes (N=1000 SEED=1 DA
 	$(PY) -m payment_ledger.generator -n $(N) --seed $(SEED) --days $(DAYS)
 
 .PHONY: e2e
-e2e: reset generate  ## Generate N transactions and take them all the way into bronze
+e2e: reset generate  ## Generate N transactions and take them all the way through silver
 	$(PY) -m payment_ledger.producer --events data/generated/events.jsonl
-	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/bronze_events.py
+	$(MAKE) bronze
+	$(MAKE) silver
+
+.PHONY: silver
+silver:  ## Deduplicate bronze into silver.events, then project it onto one row per entity
+	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/silver_events.py
+	$(COMPOSE) run --rm spark /opt/payment-ledger/jobs/silver_entities.py
 
 # Four pieces of state, and forgetting any one of them makes the next run lie: the topic still
 # holds the last run's events, the checkpoint still says they were consumed, the catalog still
@@ -113,12 +128,16 @@ e2e: reset generate  ## Generate N transactions and take them all the way into b
 # not used: against MinIO it logs a failure per object and leaves them behind, so the files are
 # removed where they actually live.
 .PHONY: reset
-reset:  ## Start over: drop the topic, the checkpoint, the bronze table and its files
-	-$(COMPOSE) exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 	  --delete --topic stripe.events.raw
+reset:  ## Start over: drop the topic, the checkpoints, every table and their files
+	-$(COMPOSE) exec -T kafka /opt/kafka/bin/kafka-topics.sh \
+	  --bootstrap-server kafka:19092 --delete --topic stripe.events.raw
 	$(COMPOSE) up -d --force-recreate kafka-init
-	$(COMPOSE) run --rm --entrypoint /bin/sh spark 	  -c "rm -rf /opt/payment-ledger/checkpoints/bronze_events"
-	$(COMPOSE) run --rm --entrypoint /opt/spark/bin/spark-sql spark 	  -e "DROP TABLE IF EXISTS lakehouse.bronze.events"
-	$(COMPOSE) run --rm --entrypoint /bin/sh minio-init 	  -c "mc alias set l http://minio:9000 minioadmin minioadmin >/dev/null && 	      mc rm --recursive --force --quiet l/warehouse/bronze || true"
+	$(COMPOSE) run --rm --entrypoint /bin/sh spark \
+	  -c "rm -rf /opt/payment-ledger/checkpoints/*"
+	$(COMPOSE) run --rm --entrypoint /opt/spark/bin/spark-sql spark -e "$(DROP_TABLES)"
+	$(COMPOSE) run --rm --entrypoint /bin/sh minio-init \
+	  -c "mc alias set l http://minio:9000 minioadmin minioadmin >/dev/null && \
+	      mc rm --recursive --force --quiet l/warehouse/bronze l/warehouse/silver || true"
 
 .PHONY: sql
 sql:  ## Open spark-sql against the lakehouse catalog
