@@ -2,8 +2,8 @@
 # nothing, not a production topology.
 #
 # Services arrive with the phase that needs them. Kafka, MinIO and the Iceberg REST catalog are
-# here now (phases 0 and 1). Spark lands with the streaming jobs in phase 1 and Airflow with the
-# chaos suite in phase 5, each pinned when there is a job to run against it rather than guessed
+# here now (phases 0 and 1), and so is Spark, which arrived with the streaming job. Airflow lands
+# with the chaos suite in phase 5, pinned when there is a job to run against it rather than guessed
 # at in advance.
 
 name: payment-ledger
@@ -48,13 +48,15 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+    # A one-item list holding a literal block, which is the only shape that survives intact.
+    # A string `command:` is word-split by Compose, so the script would reach `sh -c` as argv
+    # rather than as one script, and a folded `>` block turns the newlines into spaces.
     entrypoint: ["/bin/sh", "-c"]
-    command: >
-      "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092
-         --create --if-not-exists --topic stripe.events.raw
-         --partitions 6 --replication-factor 1
-         --config cleanup.policy=delete --config retention.ms=604800000
-       && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list"
+    command:
+      - |
+        set -e
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092           --create --if-not-exists --topic stripe.events.raw           --partitions 6 --replication-factor 1           --config cleanup.policy=delete --config retention.ms=604800000
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list
     restart: "no"
 
   minio:
@@ -83,14 +85,16 @@ services:
       minio:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
-    command: >
-      "mc alias set local http://minio:9000 minioadmin minioadmin
-       && mc mb --ignore-existing local/warehouse
-       && mc ls local"
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing local/warehouse
+        mc ls local
     restart: "no"
 
   iceberg-rest:
-    image: apache/iceberg-rest-fixture:1.6.1
+    image: apache/iceberg-rest-fixture:1.10.1
     container_name: pl-iceberg-rest
     ports:
       - "8181:8181"
@@ -106,6 +110,42 @@ services:
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_REGION: us-east-1
 
+  # Arrives with phase 1, the first phase with a job to run against it. Not a long-lived
+  # service: `make bronze` runs one submit and the container goes away, which is why it sits
+  # behind a profile and does not start with `make up`.
+  spark:
+    image: apache/spark:3.5.7-python3
+    profiles: ["jobs"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_started
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+      SPARK_CONF_DIR: /opt/payment-ledger/conf
+    # As root because the image runs as uid 185 while a fresh named volume comes up owned by
+    # root, so the ivy cache and the checkpoint would both be unwritable on the first run. The
+    # container is local, disposable and exposes no port; the alternative is a Dockerfile whose
+    # only job is a mkdir.
+    user: root
+    working_dir: /opt/payment-ledger
+    entrypoint: ["/opt/spark/bin/spark-submit"]
+    volumes:
+      - ../jobs:/opt/payment-ledger/jobs:ro
+      - ../conf:/opt/payment-ledger/conf:ro
+      - spark-ivy:/opt/payment-ledger/ivy
+      - spark-checkpoints:/opt/payment-ledger/checkpoints
+
 volumes:
   kafka-data:
   minio-data:
+  # The ivy cache is a volume so the connector jars are downloaded once rather than on every run,
+  # and the checkpoints are one so a rerun resumes from the offsets it left off at instead of
+  # replaying the topic into bronze a second time.
+  spark-ivy:
+  spark-checkpoints:
