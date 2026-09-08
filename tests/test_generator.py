@@ -225,3 +225,19 @@ def test_a_refund_is_dated_after_the_charge_it_refunds(sim):
     for event in refunds:
         obj = event["data"]["object"]
         assert obj["created"] > charged[obj["charge"]]
+
+
+def test_no_two_balance_transactions_share_an_id_at_a_size_that_used_to_collide():
+    """The ids used to be the charge's number plus a million, two million or three million, which
+    is unique only while the run is smaller than the constant. At a million transactions a late
+    charge took the id of an early charge's refund, and the pipeline caught it as 18,256 duplicate
+    keys, which is the right place to catch it and the wrong place to have to.
+
+    Two thousand transactions is enough to prove the property here: the counters that used to
+    overlap are checked directly rather than by generating a million of anything.
+    """
+    sim = g.simulate(g.Run(transactions=2_000, seed=3, days=7))
+    ids = [txn["id"] for txn in sim.balance_transactions]
+
+    assert len(ids) == len(set(ids))
+    assert sim._transactions == 4 * 2_000, "four numbers are handed out per charge"

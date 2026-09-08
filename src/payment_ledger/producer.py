@@ -79,6 +79,27 @@ def _headers(event: dict) -> list[tuple[str, bytes]]:
     ]
 
 
+def deliver(producer, **message) -> None:
+    """Hand one message to the client, waiting when its queue is full.
+
+    `produce` is asynchronous: it enqueues locally and returns. At fifty nine fixtures, or at a few
+    thousand generated events, that queue never fills and this function looks like ceremony. At
+    eight hundred thousand the broker is the slower end, librdkafka's queue hits its hundred
+    thousand message ceiling, and `produce` raises `BufferError` rather than blocking.
+
+    Waiting for the queue to drain is the back pressure. Raising the ceiling would move the failure
+    rather than remove it, and dropping the message would lose an event that the ledger notices
+    much later, as a gap against the processor's balance, which is the most expensive way to find
+    out about it.
+    """
+    while True:
+        try:
+            producer.produce(**message)
+            return
+        except BufferError:
+            producer.poll(0.5)
+
+
 def publish(
     root: Path,
     *,
@@ -86,6 +107,7 @@ def publish(
     topic: str,
     limit: int | None = None,
     dry_run: bool = False,
+    progress: int = 0,
 ) -> Counter:
     """Publish every fixture. Returns a count by event type."""
     counts: Counter = Counter()
@@ -123,7 +145,8 @@ def publish(
         if producer is None:
             continue
 
-        producer.produce(
+        deliver(
+            producer,
             topic=topic,
             key=ledger_key(event).encode("utf-8"),
             value=raw,
@@ -131,11 +154,16 @@ def publish(
             on_delivery=on_delivery,
         )
         producer.poll(0)
+        if progress and (index + 1) % progress == 0:
+            log.info("%s events queued", f"{index + 1:,}")
 
     if producer is not None:
-        remaining = producer.flush(timeout=30)
+        # Long enough for the client to hand over what a large run leaves in flight. The earlier
+        # thirty seconds was sized for fifty nine fixtures and would abandon a queue of hundreds of
+        # thousands, reporting as unsent messages that were merely still on their way.
+        remaining = producer.flush(timeout=300)
         if remaining:
-            raise SystemExit(f"{remaining} messages were still unsent after 30s. Is Kafka up?")
+            raise SystemExit(f"{remaining} messages were still unsent after 300s. Is Kafka up?")
     if failures:
         raise SystemExit("deliveries failed:\n  " + "\n  ".join(failures))
 
@@ -162,6 +190,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--limit", type=int, default=None, help="publish at most this many")
     parser.add_argument(
+        "--progress",
+        type=int,
+        default=250_000,
+        help="say how far along every this many events, or 0 for silence (default: %(default)s)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="read and count the fixtures without contacting a broker",
@@ -185,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         topic=args.topic,
         limit=args.limit,
         dry_run=args.dry_run,
+        progress=args.progress,
     )
 
     total = sum(counts.values())

@@ -170,3 +170,40 @@ def test_the_topic_the_producer_writes_to_is_the_one_the_stack_creates():
     topic name would otherwise be a stream that is silently empty rather than an error."""
     compose = (REPO_ROOT / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
     assert f"--topic {producer.DEFAULT_TOPIC}" in compose
+
+
+class QueueFullOnce:
+    """A client whose local queue is full the first time and drains on the next poll."""
+
+    def __init__(self, full_for: int = 1):
+        self.full_for = full_for
+        self.produced: list[dict] = []
+        self.polls = 0
+
+    def produce(self, **message):
+        if self.full_for > 0:
+            self.full_for -= 1
+            raise BufferError("Local: Queue full")
+        self.produced.append(message)
+
+    def poll(self, timeout=0):
+        self.polls += 1
+
+
+def test_a_full_queue_is_waited_out_rather_than_dropped():
+    """`produce` enqueues locally and raises once the broker is the slower end. At a few thousand
+    events that never happens; at eight hundred thousand it does, and an event dropped here is one
+    the ledger only misses days later as a gap against the processor's balance."""
+    client = QueueFullOnce(full_for=3)
+    producer.deliver(client, topic="t", key=b"k", value=b"v")
+
+    assert len(client.produced) == 1
+    assert client.polls == 3, "the queue was not given time to drain between attempts"
+
+
+def test_a_client_that_accepts_at_once_is_not_polled():
+    client = QueueFullOnce(full_for=0)
+    producer.deliver(client, topic="t", key=b"k", value=b"v")
+
+    assert len(client.produced) == 1
+    assert client.polls == 0

@@ -158,12 +158,23 @@ class Simulation:
         self.events: list[dict] = []
         self.balance_transactions: list[dict] = []
         self._counter = 0
+        self._transactions = 0
 
     # -- helpers ---------------------------------------------------------------------------
 
     def _next(self) -> int:
         self._counter += 1
         return self._counter
+
+    def _next_transaction(self) -> int:
+        """The next balance transaction number, from a counter that is only ever used for these.
+
+        Four are handed out per charge and at most three are used, which wastes numbers and cannot
+        collide at any size. The alternative, deriving them from the charge's number by adding a
+        constant, is unique only while the run is smaller than the constant.
+        """
+        self._transactions += 1
+        return self._transactions
 
     def _amount(self) -> int:
         """Skewed small, the way real card volume is, and never a round number of currency."""
@@ -434,16 +445,22 @@ class Simulation:
     def run_simulation(self) -> Simulation:
         for _ in range(self.run.transactions):
             n = self._next()
+            # Balance transaction ids come from a counter of their own rather than from the
+            # transaction's number plus a constant. The constants used to be a million, two
+            # million and three million, which is unique for as long as a run stays under a
+            # million transactions and collides the moment it does not: a charge late in a large
+            # run took the id of an earlier charge's refund. A generator is the last place that
+            # should invent duplicate ids for a pipeline whose subject is duplicate detection.
             ids = {
                 "intent": sim_id("pi", n),
                 "charge": sim_id("ch", n),
                 "method": sim_id("pm", n),
-                "txn": sim_id("txn", n),
                 "refund": sim_id("re", n),
-                "refund_txn": sim_id("txn", n + 10**6),
                 "dispute": sim_id("du", n),
-                "dispute_txn": sim_id("txn", n + 2 * 10**6),
-                "dispute_reversal_txn": sim_id("txn", n + 3 * 10**6),
+                "txn": sim_id("txn", self._next_transaction()),
+                "refund_txn": sim_id("txn", self._next_transaction()),
+                "dispute_txn": sim_id("txn", self._next_transaction()),
+                "dispute_reversal_txn": sim_id("txn", self._next_transaction()),
             }
             amount = self._amount()
             currency = self._currency()

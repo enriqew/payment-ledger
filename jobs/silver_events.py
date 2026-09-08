@@ -39,6 +39,11 @@ DEFAULT_SOURCE = "lakehouse.bronze.events"
 DEFAULT_TABLE = "lakehouse.silver.events"
 DEFAULT_CHECKPOINT = "/opt/payment-ledger/checkpoints/silver_events"
 
+# What one micro-batch may take from the backlog. The number matters only when there is a
+# backlog: a live stream of a few events a second never reaches it, and a first run over a
+# table of millions reaches it immediately.
+DEFAULT_MAX_ROWS_PER_BATCH = 500_000
+
 BALANCE_TRANSACTION = StructType(
     [
         StructField("id", StringType()),
@@ -124,6 +129,26 @@ WHEN MATCHED THEN UPDATE SET
     target.last_seen_at  = greatest(target.last_seen_at, source.last_seen_at)
 WHEN NOT MATCHED THEN INSERT *
 """
+
+
+def drain(query, patience: float = 5.0) -> None:
+    """Run bounded micro-batches until the backlog is gone, then stop.
+
+    `Trigger.AvailableNow` is the obvious way to say "process what is there and exit", and it is
+    the wrong tool here: Iceberg's streaming source does not implement it, so Spark logs that the
+    read limit **is ignored** and hands the whole backlog to a single batch. That is invisible at
+    four thousand rows and an OutOfMemoryError at four and a half million.
+
+    A processing time trigger goes through the source's admission control instead, which is what
+    honours the limit, so catching up is a sequence of bounded merges. The query then has to be
+    stopped by hand, and a batch that finds nothing left is what says the backlog is gone.
+    """
+    while query.isActive:
+        query.awaitTermination(patience)
+        progress = query.lastProgress
+        if progress and progress.get("numInputRows", 0) == 0:
+            query.stop()
+            return
 
 
 def ensure_table(spark: SparkSession, table: str) -> None:
@@ -249,6 +274,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--table", default=DEFAULT_TABLE)
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument(
+        "--max-rows-per-batch",
+        type=int,
+        default=DEFAULT_MAX_ROWS_PER_BATCH,
+        help="rows one micro-batch may take from the backlog (default: %(default)s)",
+    )
+    parser.add_argument(
         "--await-events",
         action="store_true",
         help="keep running as bronze grows, instead of draining and exiting",
@@ -259,18 +290,25 @@ def main(argv: list[str] | None = None) -> int:
     spark.sparkContext.setLogLevel("WARN")
     ensure_table(spark, args.table)
 
-    stream = spark.readStream.format("iceberg").load(args.source)
+    # A micro-batch is bounded, and it has to be. Left to itself the Iceberg source hands the whole
+    # available backlog to one batch, which is invisible while the backlog is four thousand events
+    # and is an OutOfMemoryError at four and a half million: the merge scans its source twice, so
+    # the batch is held, and the batch was the entire table. Bounding it makes the backlog a
+    # sequence of merges instead of one, which is what a stream catching up is supposed to look
+    # like. More heap would have moved the number this fails at without changing the shape.
+    stream = (
+        spark.readStream.format("iceberg")
+        .option("streaming-max-rows-per-micro-batch", str(args.max_rows_per_batch))
+        .load(args.source)
+    )
 
     writer = stream.writeStream.foreachBatch(merge_batch(args.table)).option(
         "checkpointLocation", args.checkpoint
     )
-    query = (
-        writer.trigger(processingTime="10 seconds").start()
-        if args.await_events
-        else writer.trigger(availableNow=True).start()
-    )
-
-    query.awaitTermination()
+    if args.await_events:
+        writer.trigger(processingTime="10 seconds").start().awaitTermination()
+    else:
+        drain(writer.trigger(processingTime="0 seconds").start())
     report(spark, args.source, args.table)
     spark.stop()
     return 0

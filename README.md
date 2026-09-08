@@ -130,6 +130,55 @@ No timing is quoted here, deliberately. The subject of this project is correctne
 and a wall clock off a laptop container invites exactly the reading the design's reporting rules
 refuse.
 
+## What a million transactions found
+
+Everything above is a thousand transactions, which is the default because it is what a reader can
+clone and reproduce. The run below is a million, and it is here because of what it broke.
+
+One million transactions over the same thirty day calendar produce **4,480,064 events** (8.9 GB of
+JSON), **1,136,191 balance transactions**, and seventy two days of reported balance. The ledger
+that comes out of it holds **5,544,764 postings across 2,272,382 entries** and sums to zero, and
+all sixty two dbt nodes pass, the four invariants and the flow conservation among them:
+
+| Account | Balance | Postings |
+|---|---:|---:|
+| `asset:balance_available` | 24,358,957,460 | 1,136,191 |
+| `asset:balance_pending` | 0 | 2,272,382 |
+| `contra_revenue:refunds` | 2,216,789,918 | 80,238 |
+| `expense:disputes` | 737,940,652 | 55,953 |
+| `expense:processing_fees` | 441,327,412 | 1,000,000 |
+| `revenue:gross_sales` | -27,755,015,442 | 1,000,000 |
+| **total** | **0** | 5,544,764 |
+
+**Five defects, and every one of them is invisible at a thousand.** They are worth listing because
+four of the five were in code that had been passing its tests for weeks.
+
+| What broke | Where | How it showed up |
+|---|---|---|
+| The whole run held in memory | generator | 20 GB of resident memory. It survived, which is luck rather than design |
+| No back pressure | producer | `BufferError: Local: Queue full` at a hundred thousand events, because `produce` enqueues locally and raises rather than blocking once the broker is the slower end |
+| An unbounded micro-batch | silver | `OutOfMemoryError`. The merge scans its source twice, so the batch is held, and the batch was the entire backlog |
+| A trigger that discards the bound | silver | `Trigger.AvailableNow` is not implemented by Iceberg's streaming source, so Spark logged that the read limit **is ignored** and handed over everything anyway |
+| Ids that collide past a million | generator | **The build refused to publish**: `FAIL 18256` on the uniqueness of `balance_transaction_id`, and fifty three models skipped behind it |
+
+The last one is the one worth reading twice. Balance transaction ids were the charge's number plus
+a constant, a million for the refund and two for the dispute, which is unique for exactly as long as
+a run stays under a million transactions. A late charge took the id of an early charge's refund. No
+job crashed and nothing was silently wrong either: the uniqueness test on the source failed, the
+build stopped, and not one gold model was written. A generator inventing duplicate ids is the last
+thing a pipeline about duplicate detection should have, and the pipeline is what said so.
+
+The fixes are in the four places that were wrong rather than in the numbers that made them visible:
+the balance transaction ids come from a counter of their own, the producer waits for the client's
+queue to drain, the silver stream bounds its micro-batch and uses a trigger that respects the
+bound, and the Spark driver gets six gigabytes instead of the default one.
+
+**What this does not say.** No throughput figure appears here, at this size or any other. The run
+was sliced into six deliveries of eight hundred thousand events because the broker's log lives on a
+disk with nine gigabytes free, so what a wall clock would measure is a laptop's disk rather than
+anything about the pipeline. The claim is the one the project has always made: the failures are
+caught, at this size too.
+
 ## What silver does with it
 
 Bronze holds deliveries. Silver holds events. `make silver` runs two jobs, and the split between
@@ -394,10 +443,13 @@ than a plain ISO day, or a chaos suite carrying some of its arms but not all of 
 is written at all. A page has no way to find any of that out afterwards, so the checks are on the
 way out.
 
-**Bounded by the calendar, not by volume.** Every artifact is a day, an account or a scenario, so a
-hundred thousand transactions produce the same 62 daily rows as a thousand. `ledger_postings` is
-deliberately not exported: it is the one table that grows with volume, and a page that wanted
-individual postings would be asking for a query engine rather than for a file.
+**Bounded by the calendar, not by volume.** Every artifact is a day, an account or a scenario. A
+thousand transactions produce 62 daily rows and a million produce 72, and the difference is the
+calendar filling in rather than the file growing: the last day of a run is the last dispute to
+close plus the week its reversal takes to become available, which is 72 at the most for a thirty
+day calendar however many transactions are in it. `ledger_postings` is deliberately not exported:
+it is the one table that does grow with volume, and a page that wanted individual postings would be
+asking for a query engine rather than for a file.
 
 **Byte identical for the same run.** There is no timestamp anywhere in it. What identifies an
 export is the fingerprint of the generated run it was built from, recorded in the manifest beside
