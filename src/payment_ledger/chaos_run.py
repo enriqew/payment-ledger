@@ -185,10 +185,10 @@ def run(step: Step) -> str:
     return result.stdout or ""
 
 
-def arm(scenario: str, out: Path, seed: int) -> int:
+def arm(scenario: str, out: Path, seed: int, source: Path) -> int:
     """One scenario, injected and run and judged. Returns 0 when it did what it said it would."""
     print(f"\n{'=' * 96}\n### {scenario}\n{'=' * 96}")
-    manifest = chaos.build(scenario, config.REPO_ROOT / "data" / "generated", out, seed)
+    manifest = chaos.build(scenario, source, out, seed)
     print(f"injected  {json.dumps(manifest['injected'], sort_keys=True)}")
 
     create_topic(scenario)
@@ -393,6 +393,13 @@ def main(argv: list[str] | None = None) -> int:
         help="run these arms instead of all of them",
     )
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--source",
+        type=Path,
+        default=config.REPO_ROOT / "data" / "generated",
+        help="the generated run to damage. The suite runs the pipeline once per scenario, so this"
+        " is affordable at a size the ledger itself may not be (default: %(default)s)",
+    )
     parser.add_argument("--out", type=Path, default=config.REPO_ROOT / "data" / "chaos")
     parser.add_argument(
         "--reset",
@@ -419,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
 
     failed = []
     for scenario in scenarios:
-        if arm(scenario, args.out / scenario, args.seed) != 0:
+        if arm(scenario, args.out / scenario, args.seed, args.source) != 0:
             failed.append(scenario)
 
     print(f"\n{'=' * 96}")

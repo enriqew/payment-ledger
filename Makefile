@@ -177,13 +177,21 @@ export:  ## Dump the gold tables and assemble the artifacts a dashboard reads
 scenarios:  ## List the six failures and what is supposed to catch each one
 	$(PY) -m payment_ledger.chaos list
 
+# The suite takes the pipeline through seven runs, once per scenario, so it generates a source of
+# its own rather than damaging whatever size the ledger was last built at. Override with
+# `make chaos SUITE_N=25000`; the export states the suite's run beside the ledger's, so a page can
+# never show one tab counting something different from the next without saying so.
+SUITE_N ?= 1000
+SUITE   := data/suite
+
 .PHONY: chaos
-chaos: chaos-reset generate  ## Inject the six failures and check each was caught, and only it
-	$(PY) -m payment_ledger.chaos_run --seed $(SEED)
+chaos: chaos-reset  ## Inject the six failures and check each was caught, and only it
+	$(PY) -m payment_ledger.generator -n $(SUITE_N) --seed $(SEED) --days $(DAYS) --out $(SUITE)
+	$(PY) -m payment_ledger.chaos_run --seed $(SEED) --source $(SUITE)
 
 .PHONY: chaos-one
 chaos-one:  ## One arm end to end, into namespaces of its own (SCENARIO=dropped_event)
-	$(PY) -m payment_ledger.chaos_run --only $(SCENARIO) --seed $(SEED)
+	$(PY) -m payment_ledger.chaos_run --only $(SCENARIO) --seed $(SEED) --source $(SUITE)
 
 .PHONY: chaos-reset
 chaos-reset:  ## Drop what the suite wrote: its topics, checkpoints, namespaces, files and inputs

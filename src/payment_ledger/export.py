@@ -202,6 +202,10 @@ def read_chaos(root: Path) -> list[dict]:
                 "failed": failed,
                 "as_described": not chaos.verify(manifest, counts, failed, baseline),
                 "counts": {key: counts.get(key) for key in CHAOS_COUNTS},
+                # Which generated run this arm damaged. The suite runs the pipeline once per
+                # scenario, so it is affordable at a size the ledger itself may not be, and the
+                # page has to be able to say which figure came from which run.
+                "source_run": manifest.get("source_run"),
             }
         )
     # In the order the suite runs them, which is the order the design lists the failures in, rather
@@ -245,15 +249,25 @@ def assemble(tables: dict[str, list[dict]], run: dict, arms: list[dict]) -> dict
         # Empty on a healthy run, which is the statement that the two inputs agreed and that no
         # published day has moved. It is not a table nobody finished.
         "findings.json": artifact(coverage_gaps=gaps, restatements=restatements),
-        "chaos.json": artifact(arms=arms),
+        "chaos.json": artifact(arms=arms, run=suite_run(arms)),
     }
     files["manifest.json"] = artifact(
         run={key: run[key] for key in ("transactions", "seed", "days", "start", "sha256")},
+        # The suite's own run, which is not always the ledger's. Injecting six failures means
+        # taking the pipeline through seven runs, so the suite is affordable at a size the ledger
+        # is not, and stating both is the alternative to a page where one tab quietly counts
+        # something different from the next.
+        chaos_run=suite_run(arms),
         settlement_currency=SETTLEMENT_CURRENCY,
         amounts=AMOUNTS,
         files={name: count_of(payload) for name, payload in sorted(files.items())},
     )
     return files
+
+
+def suite_run(arms: list[dict]) -> dict | None:
+    """The run every arm was built from, or nothing when there are no arms."""
+    return arms[0]["source_run"] if arms else None
 
 
 def count_of(payload: dict) -> int:
@@ -361,6 +375,15 @@ def validate(files: dict[str, dict]) -> None:
     for arm in arms:
         if not arm["as_described"]:
             problems.append(f"the {arm['scenario']} arm did not do what it said it would")
+        if arm["source_run"] is None:
+            problems.append(f"the {arm['scenario']} arm does not say which run it was built from")
+        elif arm["source_run"] != arms[0]["source_run"]:
+            # Arms from two different runs are not a suite. Every arm but the control one measures
+            # itself against the baseline's counts, so a suite assembled out of two sizes would be
+            # comparing numbers that were never comparable.
+            problems.append(
+                f"the {arm['scenario']} arm was built from a different run than the baseline"
+            )
 
     if problems:
         raise Refused(

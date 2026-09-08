@@ -449,6 +449,28 @@ def write_wave(wave: Wave, out: Path) -> dict[str, int]:
     return counts
 
 
+def source_run(source: Path) -> dict:
+    """The generated run an arm was built from, as the generator recorded it.
+
+    A run is described completely by its transaction count, its seed and its calendar, and the
+    digest is what makes that checkable. Reading it here rather than asking the caller means an arm
+    cannot claim a size it was not built at.
+    """
+    manifest = source / "run.json"
+    if not manifest.exists():
+        raise SystemExit(
+            f"{manifest} is missing, so an arm built from {source} could not say what run it"
+            " damaged. Generate the run first: make generate"
+        )
+    run = json.loads(manifest.read_text(encoding="utf-8"))
+    return {
+        "transactions": run["transactions"],
+        "seed": run["seed"],
+        "days": run["days"],
+        "events": run["sha256"]["events"],
+    }
+
+
 def build(name: str, source: Path, out: Path, seed: int) -> dict:
     scenario = SCENARIOS[name]
     waves, injected = scenario.inject(read_wave(source), random.Random(seed))
@@ -473,6 +495,11 @@ def build(name: str, source: Path, out: Path, seed: int) -> dict:
         "failure": scenario.failure,
         "detection": scenario.detection,
         "seed": seed,
+        # Which generated run this arm damaged. Carried because the suite runs the pipeline once
+        # per scenario, so it is affordable at a size the ledger itself is not, and a page showing
+        # both has to be able to say which figure came from which run rather than letting a reader
+        # assume they are the same one.
+        "source_run": source_run(source),
         "injected": injected,
         "waves": [],
         "expect": {

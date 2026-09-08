@@ -30,6 +30,14 @@ contract does not name, and nothing outside this repository should read them.
 `chaos.json` carries its arms in the order the suite runs them, which is the order the design lists
 the failures in rather than the alphabetical order the directories happen to have.
 
+**The suite's run is not always the ledger's, and the manifest says both.** Injecting six failures
+means taking the pipeline through seven runs, once per scenario, so the suite is affordable at a
+size the ledger itself may not be. `manifest.chaos_run` and `chaos.json`'s own `run` carry the
+generated run every arm was damaged from, beside `manifest.run` for the tables. Every arm must have
+been built from the same one: arms from two different runs are not a suite, because every arm but
+the control one measures itself against the baseline's counts. A page showing both is expected to
+say which figure came from which.
+
 Every file carries `schema_version`, `simulated: true` and a `notice` saying what the data is.
 That is repeated in each file rather than kept in the manifest because these get copied one at a
 time, and a payload that knows it is simulated only because of a sibling file is one rename away

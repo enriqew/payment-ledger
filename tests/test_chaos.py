@@ -27,9 +27,25 @@ def wave():
 
 @pytest.fixture(scope="module")
 def source(tmp_path_factory, wave):
+    """A generated run on disk, manifest and all.
+
+    The manifest is not optional decoration: an arm records which run it damaged, so a scenario
+    built from a directory that cannot say what it holds is refused.
+    """
     out = tmp_path_factory.mktemp("generated")
     for name in chaos.ARTIFACTS:
         g.write_jsonl(out / f"{name}.jsonl", wave.rows(name))
+    (out / "run.json").write_text(
+        json.dumps(
+            {
+                "transactions": RUN.transactions,
+                "seed": RUN.seed,
+                "days": RUN.days,
+                "sha256": {"events": "0" * 64},
+            }
+        ),
+        encoding="utf-8",
+    )
     return out
 
 
@@ -227,6 +243,28 @@ def test_an_expectation_on_disk_is_a_number(name, source, tmp_path):
     manifest = chaos.build(name, source, tmp_path / name, seed=1)
     for rows in manifest["expect"]["dbt_failures"].values():
         assert rows is None or isinstance(rows, int)
+
+
+def test_an_arm_records_the_run_it_damaged(source, tmp_path):
+    """The suite is affordable at a size the ledger may not be, so an arm that could not say what
+    it was built from would let a page show two runs as though they were one."""
+    manifest = chaos.build("baseline", source, tmp_path / "baseline", seed=1)
+    assert manifest["source_run"] == {
+        "transactions": RUN.transactions,
+        "seed": RUN.seed,
+        "days": RUN.days,
+        "events": "0" * 64,
+    }
+
+
+def test_a_source_that_cannot_say_what_it_holds_is_refused(tmp_path, wave):
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    for name in chaos.ARTIFACTS:
+        g.write_jsonl(bare / f"{name}.jsonl", wave.rows(name))
+
+    with pytest.raises(SystemExit, match="run.json"):
+        chaos.build("baseline", bare, tmp_path / "out", seed=1)
 
 
 def test_the_control_arm_is_the_generated_run_byte_for_byte(source, tmp_path):
