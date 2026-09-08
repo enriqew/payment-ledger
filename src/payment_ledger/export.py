@@ -58,7 +58,14 @@ NOTICE = (
 SETTLEMENT_CURRENCY = "eur"
 AMOUNTS = "integer minor units of the settlement currency"
 
-TABLES = ("account_balances", "daily_close", "reconciliation", "coverage_gaps", "restatements")
+TABLES = (
+    "account_balances",
+    "money_flow",
+    "daily_close",
+    "reconciliation",
+    "coverage_gaps",
+    "restatements",
+)
 
 # What each artifact keeps, and in this order. Narrowing here rather than in the dump is the point
 # of the split: the job decides which tables leave, this decides what they are allowed to say.
@@ -83,6 +90,7 @@ RECONCILIATION_FIELDS = (
     "processor_reported_the_day",
 )
 ACCOUNT_FIELDS = ("account", "currency", "balance", "postings")
+FLOW_FIELDS = ("source", "target", "currency", "amount")
 GAP_FIELDS = (
     "finding",
     "balance_transaction_id",
@@ -205,6 +213,7 @@ def read_chaos(root: Path) -> list[dict]:
 def assemble(tables: dict[str, list[dict]], run: dict, arms: list[dict]) -> dict[str, dict]:
     """The artifacts, from the rows and the run that produced them."""
     accounts = narrow(tables["account_balances"], ACCOUNT_FIELDS)
+    flow = narrow(tables["money_flow"], FLOW_FIELDS)
     daily = narrow(tables["daily_close"], DAILY_CLOSE_FIELDS)
     reconciliation = narrow(tables["reconciliation"], RECONCILIATION_FIELDS)
     gaps = narrow(tables["coverage_gaps"], GAP_FIELDS)
@@ -217,6 +226,11 @@ def assemble(tables: dict[str, list[dict]], run: dict, arms: list[dict]) -> dict
             # this page that has to be zero and a page that does not show it is not showing a
             # trial balance.
             total=sum(row["balance"] for row in accounts),
+        ),
+        # Where the money went rather than where it ended up, which is the same postings read as a
+        # graph. Sorted heaviest first so a reader of the file sees the trunk before the twigs.
+        "flow.json": artifact(
+            rows=sorted(flow, key=lambda row: (-row["amount"], row["source"], row["target"]))
         ),
         "daily_close.json": artifact(
             rows=sorted(daily, key=lambda row: (row["close_date"], row["currency"]))
@@ -275,6 +289,40 @@ def walk(value) -> Iterator:
         yield value
 
 
+def weighed(flow: list[dict], accounts: list[dict]) -> list[str]:
+    """The flow against the balances, checked here as well as in the warehouse.
+
+    A dbt test already says these agree, and a failing test does not stop `make export` from
+    reading the table it was testing: the model is built before the test that judges it. So the
+    check is repeated on the way out, where it can refuse. Nothing in a Sankey diagram objects to
+    arrows that do not add up, which is exactly why something else has to.
+    """
+    problems = []
+    net: dict[tuple[str, str], int] = {}
+    for link in flow:
+        if link["amount"] <= 0:
+            problems.append(
+                f"the flow carries {link['amount']} from {link['source']}, not a weight"
+            )
+        net[(link["target"], link["currency"])] = (
+            net.get((link["target"], link["currency"]), 0) + link["amount"]
+        )
+        net[(link["source"], link["currency"])] = (
+            net.get((link["source"], link["currency"]), 0) - link["amount"]
+        )
+
+    for account in accounts:
+        moved = net.pop((account["account"], account["currency"]), 0)
+        if moved != account["balance"]:
+            problems.append(
+                f"{account['account']} holds {account['balance']} and the flow moved {moved} into"
+                " it, so the diagram and the ledger are telling different stories"
+            )
+    for account, _ in net:
+        problems.append(f"the flow touches {account}, which the trial balance does not have")
+    return problems
+
+
 def validate(files: dict[str, dict]) -> None:
     """Everything the export promises, checked before a single byte is written."""
     problems: list[str] = []
@@ -297,6 +345,8 @@ def validate(files: dict[str, dict]) -> None:
     total = files["accounts.json"]["total"]
     if total != 0:
         problems.append(f"the trial balance is {total} and not zero, so the ledger created money")
+
+    problems += weighed(files["flow.json"]["rows"], files["accounts.json"]["rows"])
 
     unexplained = files["reconciliation.json"]["days_with_an_unexplained_difference"]
     if unexplained:

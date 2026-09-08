@@ -17,6 +17,7 @@ check fails, nothing is written at all.
 |---|---|---|
 | `manifest.json` | 1 | the run behind the export, the schema version and a count per file |
 | `accounts.json` | one per account and currency | the trial balance, with the signs double entry uses |
+| `flow.json` | one per pair of accounts money moved between | where the money went, rather than where it ended up |
 | `daily_close.json` | one per day and currency | what the books say that day closed at, and what moved |
 | `reconciliation.json` | one per day and currency | the ledger weighed against the balance the processor reports |
 | `findings.json` | 0 on a healthy run | coverage gaps and restatements, empty when the two inputs agreed and no published day moved |
@@ -35,6 +36,14 @@ time, and a payload that knows it is simulated only because of a sibling file is
 from being presented as real.
 
 ## What the export promises
+
+**The flow is the ledger, not a picture of it.** `flow.json` is aggregated from the pairing inside
+each entry: the one leg money left from and the legs it went to. It is not derived by subtracting
+one account balance from another, which happens to give the right answer on a run like this one and
+is wrong in general, because it absorbs a won dispute paying money back. What flows into an account
+minus what flows out of it is what that account holds, which is checked in the warehouse by
+`assert_the_flow_conserves` and again here on the way out. A diagram that lost a euro between two
+accounts would still draw, and would still look convincing.
 
 **Amounts are integers in the settlement currency's minor unit.** No float appears anywhere in any
 artifact, and the validator walks every value in every file to say so. An average, a percentage or

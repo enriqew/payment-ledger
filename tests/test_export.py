@@ -62,6 +62,15 @@ RECONCILIATION = [
     }
 ]
 
+FLOW = [
+    {
+        "source": "revenue:gross_sales",
+        "target": "asset:balance_available",
+        "currency": "eur",
+        "amount": 100,
+    },
+]
+
 RUN = {
     "transactions": 1000,
     "seed": 1,
@@ -75,6 +84,7 @@ RUN = {
 def tables(**overrides) -> dict:
     dumped = {
         "account_balances": ACCOUNTS,
+        "money_flow": FLOW,
         "daily_close": DAILY,
         "reconciliation": RECONCILIATION,
         "coverage_gaps": [],
@@ -181,6 +191,39 @@ def test_a_day_that_is_not_a_plain_iso_day_is_refused():
 
 def test_a_healthy_run_passes_every_check():
     export.validate(build())
+
+
+# --- the flow is the ledger, not a picture of it --------------------------------------------------
+
+
+def test_a_flow_that_moves_money_the_balances_do_not_hold_is_refused():
+    """Nothing in a Sankey diagram objects to arrows that do not add up, which is exactly why
+    something else has to. The warehouse checks this too, and a failing dbt test does not stop the
+    export from reading the table it was testing."""
+    broken = json.loads(json.dumps(FLOW))
+    broken[0]["amount"] = 99
+
+    with pytest.raises(export.Refused, match="different stories"):
+        export.validate(build(money_flow=broken))
+
+
+def test_a_flow_touching_an_account_the_trial_balance_lacks_is_refused():
+    broken = json.loads(json.dumps(FLOW))
+    broken.append(
+        {"source": "revenue:gross_sales", "target": "asset:bank", "currency": "eur", "amount": 0}
+    )
+    broken[0]["target"] = "asset:bank"
+
+    with pytest.raises(export.Refused, match="which the trial balance does not have"):
+        export.validate(build(money_flow=broken))
+
+
+def test_a_link_with_no_weight_is_refused():
+    broken = json.loads(json.dumps(FLOW))
+    broken[0]["amount"] = 0
+
+    with pytest.raises(export.Refused, match="not a weight"):
+        export.validate(build(money_flow=broken))
 
 
 # --- the chaos suite, all of it or none of it -----------------------------------------------------

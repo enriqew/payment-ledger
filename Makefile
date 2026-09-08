@@ -35,6 +35,7 @@ DROP_TABLES := \
   DROP TABLE IF EXISTS lakehouse.gold.reconciliation; \
   DROP TABLE IF EXISTS lakehouse.gold.reconciliation_items; \
   DROP TABLE IF EXISTS lakehouse.gold.coverage_gaps; \
+  DROP TABLE IF EXISTS lakehouse.gold.money_flow; \
   DROP TABLE IF EXISTS lakehouse.gold.daily_close_log; \
   DROP TABLE IF EXISTS lakehouse.gold.restatements; \
   DROP TABLE IF EXISTS lakehouse.silver.reported_balance;

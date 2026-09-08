@@ -34,6 +34,7 @@ DEFAULT_OUT = "/opt/payment-ledger/export/tables"
 # would be asking for a query engine rather than for a file.
 TABLES = (
     "account_balances",
+    "money_flow",
     "daily_close",
     "reconciliation",
     "coverage_gaps",

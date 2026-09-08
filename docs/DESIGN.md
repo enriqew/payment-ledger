@@ -424,6 +424,16 @@ balance that does not sum to zero, a day the reconciliation cannot explain, a fl
 should be, or a chaos suite carrying some of its arms but not all of them, and nothing is written
 at all. A page has no way to find any of that out afterwards.
 
+`gold.money_flow` was added when the page wanted a Sankey diagram of where the money went, and it
+is in the warehouse rather than in the page for the reason the contract gives: a figure a browser
+computed is a second implementation of the accounting that nothing checks. It is aggregated from
+the pairing inside each entry, the one leg the money left from and the legs it went to, rather than
+by subtracting one account balance from another. That subtraction happens to give the right answer
+on a healthy run and is wrong in general, because it absorbs a won dispute paying money back. The
+model rests on every entry having exactly one source leg, which is true of the entries this ledger
+makes and is not true of double entry in general, so a test refuses the build if it ever stops
+being true rather than letting the model quietly approximate.
+
 Services appear in `docker/docker-compose.yml` with the phase that needs them. Kafka, MinIO, the
 Iceberg REST catalog, Spark, a Spark Thrift server, dbt and Airflow are all there now.
 

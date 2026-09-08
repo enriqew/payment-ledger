@@ -382,6 +382,7 @@ One `N=1000` run produces 37 KB:
 |---|---|---|
 | `manifest.json` | 1 | the run behind the export, its fingerprint and a count per file |
 | `accounts.json` | 6 | the trial balance, with the signs double entry uses |
+| `flow.json` | 5 | where the money went, account to account |
 | `daily_close.json` | 62 | what the books say that day closed at, and what moved |
 | `reconciliation.json` | 62 | the ledger weighed against the balance the processor reports |
 | `findings.json` | 0 | coverage gaps and restatements, empty when the inputs agreed |

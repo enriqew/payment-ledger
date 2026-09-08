@@ -80,6 +80,21 @@ models:
         description: the difference left once the itemised causes are taken out
         tests: [not_null]
 
+  - name: money_flow
+    description: >
+      Where the money went, account to account, aggregated from the pairing inside each entry
+      rather than from subtracting one balance from another. What flows into an account minus what
+      flows out of it is what that account holds, and a test says so.
+    columns:
+      - name: source
+        tests: [not_null]
+      - name: target
+        tests: [not_null]
+      - name: amount
+        tests: [not_null]
+      - name: currency
+        tests: [not_null]
+
   - name: daily_close_log
     description: >
       What the close said, each time it was taken. The one table in gold that is appended rather
