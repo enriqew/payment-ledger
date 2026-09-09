@@ -138,3 +138,38 @@ def test_the_control_arm_runs_first():
     """Every other arm compares itself against the baseline's counts, so an order that ran it last
     would compare against whatever the previous suite left on disk."""
     assert next(iter(chaos.SCENARIOS)) == "baseline"
+
+
+# --- one arm at a time ----------------------------------------------------------------------------
+
+
+def test_clearing_an_arm_keeps_what_it_found(tmp_path, monkeypatch):
+    """Running the suite one arm at a time is what makes a large run possible on a small disk, and
+    it would be worth nothing if it also threw away the verdict. What goes is the lakehouse, the
+    topic and the damaged stream; the three files the verdict was read from stay."""
+    out = tmp_path / "chaos"
+    arm = out / "dropped_event"
+    (arm / "wave1").mkdir(parents=True)
+    (arm / "wave1" / "events.jsonl").write_text("the damaged stream", encoding="utf-8")
+    for name in ("scenario.json", "report.json", "run_results.json"):
+        (arm / name).write_text(f'{{"file": "{name}"}}', encoding="utf-8")
+
+    monkeypatch.setattr(chaos_run, "run", lambda step: "")
+    chaos_run.clear("dropped_event", out)
+
+    assert not (arm / "wave1").exists(), "the damaged stream is what an arm costs"
+    for name in ("scenario.json", "report.json", "run_results.json"):
+        assert json.loads((arm / name).read_text(encoding="utf-8")) == {"file": name}
+
+
+def test_every_arm_is_cleared_including_the_control_one():
+    """The control arm used to be exempt, on the idea that later arms compare themselves against
+    it. What they read is its `report.json`, which survives a clear, and the exemption cost a
+    million-transaction run its disk: an arm's stream and topic are eighteen gigabytes that nothing
+    reads again once its verdict is in."""
+    source = (REPO_ROOT / "src" / "payment_ledger" / "chaos_run.py").read_text(encoding="utf-8")
+    # Anchored on the call rather than on the `for`, because `reset` has a loop of its own.
+    loop = source.split("if arm(scenario")[1].split("arms that did not do")[0]
+
+    assert "clear(scenario, args.out)" in loop, "a reset here would take the finding with it"
+    assert 'scenario != "baseline"' not in loop, "the control arm is cleared like any other"

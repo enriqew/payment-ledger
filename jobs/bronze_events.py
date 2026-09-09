@@ -33,6 +33,10 @@ DEFAULT_TOPIC = "stripe.events.raw"
 DEFAULT_BOOTSTRAP = "kafka:19092"
 DEFAULT_CHECKPOINT = "/opt/payment-ledger/checkpoints/bronze_events"
 
+# What one micro-batch may take off the topic. It matters only when there is a backlog: a live
+# stream never reaches it, and a first run against a topic holding millions reaches it at once.
+DEFAULT_MAX_OFFSETS_PER_BATCH = 500_000
+
 # Only the envelope. The body of `data.object` differs per event type, and typing it here would
 # mean guessing at seven object shapes; that belongs in silver, where each type gets its own
 # table and its own schema derived from a real payload.
@@ -155,6 +159,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--table", default=DEFAULT_TABLE)
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument(
+        "--max-offsets-per-batch",
+        type=int,
+        default=DEFAULT_MAX_OFFSETS_PER_BATCH,
+        help="events one micro-batch may take off the topic (default: %(default)s)",
+    )
+    parser.add_argument(
         "--starting-offsets",
         default="earliest",
         help="only consulted on the first run; after that the checkpoint decides",
@@ -175,6 +185,12 @@ def main(argv: list[str] | None = None) -> int:
         .option("kafka.bootstrap.servers", args.bootstrap)
         .option("subscribe", args.topic)
         .option("startingOffsets", args.starting_offsets)
+        # A micro-batch is bounded here for the same reason it is in silver, and unlike silver's
+        # source the Kafka one implements the interface `Trigger.AvailableNow` needs, so the limit
+        # is honoured and a backlog is drained a batch at a time rather than in one. Draining four
+        # and a half million events in a single batch is an OutOfMemoryError, and the number of
+        # events waiting on a topic is not something a job gets to assume.
+        .option("maxOffsetsPerTrigger", str(args.max_offsets_per_batch))
         # A record the job cannot read is a real event that has to be looked at, not a reason to
         # skip ahead. Nothing here may silently advance past data it failed to consume.
         .option("failOnDataLoss", "true")

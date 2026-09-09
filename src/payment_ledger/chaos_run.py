@@ -383,6 +383,29 @@ def reset(scenarios: list[str], out: Path) -> None:
             shutil.rmtree(out / scenario)
 
 
+def clear(scenario: str, out: Path) -> None:
+    """Take one arm back to nothing while keeping what it found.
+
+    The difference from a reset is the three files the verdict was read from: what this drops is
+    the lakehouse, the topic and the damaged stream on disk, which together are the whole cost of
+    an arm, while `scenario.json`, `report.json` and `run_results.json` stay. Running the suite one
+    arm at a time is what makes a large run possible at all, and it costs the side by side
+    comparison the ordinary suite leaves in the catalog.
+    """
+    findings = {}
+    for keep in ("scenario.json", "report.json", "run_results.json"):
+        path = out / scenario / keep
+        if path.exists():
+            findings[keep] = path.read_bytes()
+
+    reset([scenario], out)
+
+    if findings:
+        (out / scenario).mkdir(parents=True, exist_ok=True)
+        for name, content in findings.items():
+            (out / scenario / name).write_bytes(content)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the chaos suite and judge every arm.")
     parser.add_argument(
@@ -393,6 +416,13 @@ def main(argv: list[str] | None = None) -> int:
         help="run these arms instead of all of them",
     )
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="drop each arm once it has been judged, keeping only what it found. The suite"
+        " otherwise leaves all seven lakehouses side by side, which is worth having and is"
+        " what makes a large run impossible on a small disk",
+    )
     parser.add_argument(
         "--source",
         type=Path,
@@ -428,6 +458,16 @@ def main(argv: list[str] | None = None) -> int:
     for scenario in scenarios:
         if arm(scenario, args.out / scenario, args.seed, args.source) != 0:
             failed.append(scenario)
+        if args.sequential:
+            # `clear` and not `reset`: what is dropped is the lakehouse, the topic and the damaged
+            # stream, and what stays is the three files the verdict was read from. A reset here
+            # would take the finding with the evidence and leave the suite with nothing to export.
+            #
+            # The control arm is cleared like any other. What the later arms compare themselves
+            # against is its `report.json`, which is one of the files kept, and exempting it cost
+            # this run a disk: its stream and its topic are eighteen gigabytes nothing reads again.
+            print(f"\n--- clearing {scenario} before the next arm")
+            clear(scenario, args.out)
 
     print(f"\n{'=' * 96}")
     if failed:
