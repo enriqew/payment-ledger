@@ -33,6 +33,7 @@ import argparse
 import copy
 import json
 import random
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -65,8 +66,19 @@ class Wave:
     daily_balance: list[dict]
 
     def copy(self) -> Wave:
+        """A copy an injection can damage without touching the original.
+
+        The events are copied as a list rather than as their contents, which at a million
+        transactions is the difference between thirty six megabytes of pointers and a second copy
+        of twenty gigabytes of payloads. That is safe because of a property of the injections
+        rather than of the data: none of them mutates an event. They select, reorder and duplicate,
+        and the one that duplicates deep copies the handful it repeats. A test holds them to it.
+
+        The balance transactions are copied deeply, because the rounding drift does mutate them and
+        there are three orders of magnitude fewer.
+        """
         return Wave(
-            events=copy.deepcopy(self.events),
+            events=list(self.events),
             balance_transactions=copy.deepcopy(self.balance_transactions),
             daily_balance=copy.deepcopy(self.daily_balance),
         )
@@ -120,6 +132,29 @@ def take(items: list, rng: random.Random, rate: float = DAMAGE_RATE) -> list:
 
 def charge_transactions(wave: Wave) -> list[dict]:
     return [t for t in wave.balance_transactions if t.get("reporting_category") == "charge"]
+
+
+# Every identity in the stream is a prefixed token: `ch_...`, `pi_...`, `re_...`, `dp_...`. Field
+# names match this too, which costs nothing: what is compared against it is a set of identifiers.
+IDENTIFIER = re.compile(r"[a-z]+_[A-Za-z0-9]+")
+
+
+def mentions(event: dict) -> set[str]:
+    """Every identifier the event names, wherever inside it the name sits.
+
+    Two scenarios need to find the events that refer to an entity, and they cannot do it by reading
+    a known field: a refund names its charge in one place and a dispute names it in another, and
+    the point of silencing an entity is that *everything* about it goes with it.
+
+    The obvious way to write that is `any(name in json.dumps(event) for name in names)`, and at a
+    thousand transactions it is indistinguishable from this. At a million it does not finish.
+    `json.dumps` sits inside the generator, so the event is serialized once per candidate name, and
+    two per cent of a million charges is forty thousand names against four and a half million
+    events: a hundred and seventy nine billion serializations, which is weeks. This serializes once
+    and intersects sets, so the cost is the length of the stream rather than its product with the
+    damage. A test holds the two to the same answer.
+    """
+    return set(IDENTIFIER.findall(json.dumps(event)))
 
 
 # --- the six ------------------------------------------------------------------------------------
@@ -187,7 +222,7 @@ def dropped_event(wave: Wave, rng: random.Random) -> Injection:
     # carries the balance transaction, and anything that refers back to them later.
     silenced = set(charges) | {charge.replace("ch_", "pi_", 1) for charge in charges}
 
-    kept = [e for e in damaged.events if not any(s in json.dumps(e) for s in silenced)]
+    kept = [e for e in damaged.events if not silenced & mentions(e)]
     removed = len(damaged.events) - len(kept)
     damaged.events = kept
 
@@ -282,7 +317,7 @@ def late_arrival(wave: Wave, rng: random.Random) -> Injection:
     sources = {t["source"] for t in damaged.balance_transactions if t["id"] in late}
 
     early = [t for t in damaged.balance_transactions if t["id"] not in late]
-    held = [e for e in damaged.events if any(source in json.dumps(e) for source in sources)]
+    held = [e for e in damaged.events if sources & mentions(e)]
     held_ids = {e["id"] for e in held}
 
     first = Wave(
@@ -432,7 +467,13 @@ def read_wave(source: Path) -> Wave:
                 f"{path} is missing. A scenario is a perturbation of a generated run, so\n"
                 "generate one first: make generate N=1000"
             )
-        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+        # Line by line rather than `read_text().splitlines()`. The parsed rows are the only thing
+        # worth holding, and reading the file whole holds two more copies of it first: the text,
+        # and then the list of lines split out of it. At a million transactions the stream is nine
+        # gigabytes, so the version that read it whole needed some thirty eight before it had
+        # parsed anything, and died on the fourth arm of a suite the first three had survived.
+        with path.open(encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
 
     return Wave(*(rows(name) for name in ARTIFACTS))
 

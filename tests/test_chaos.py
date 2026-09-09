@@ -195,6 +195,37 @@ def test_the_stream_still_says_the_dispute_was_won(wave):
     assert injected["lost_reversals"] == len(lost)
 
 
+# --- finding the events that name an entity -------------------------------------------------------
+
+
+def test_the_lookup_agrees_with_the_scan_it_replaced(wave):
+    """Two scenarios used to ask `any(name in json.dumps(event) for name in names)`, which is
+    correct and, at a million transactions, endless: the event is serialized once per name, and two
+    per cent of a million charges is forty thousand names. The set intersection that replaced it
+    has to select exactly the same events, or the scenarios damage something else now.
+    """
+    names = {t["source"] for t in chaos.charge_transactions(wave)}
+    sample = sorted(names)[:40]
+    needles = set(sample) | {name.replace("ch_", "pi_", 1) for name in sample}
+
+    assert needles
+    for event in wave.events:
+        scanned = any(name in json.dumps(event) for name in needles)
+        assert scanned == bool(needles & chaos.mentions(event)), event["id"]
+
+
+def test_an_identifier_is_read_whole_rather_than_as_a_substring(wave):
+    """The intersection is the stricter of the two where they could differ: a name that is a
+    prefix of a longer identifier is no longer a match. Nothing here relies on that, because the
+    generator numbers every id to the same width, but a scenario silencing `ch_1` has no business
+    taking `ch_10` with it."""
+    found = chaos.mentions(wave.events[0])
+
+    assert found
+    assert all(chaos.IDENTIFIER.fullmatch(name) for name in found)
+    assert any(name.startswith(("ch_", "pi_", "evt_")) for name in found)
+
+
 # --- reproducible, or it is an anecdote -----------------------------------------------------------
 
 
@@ -409,3 +440,14 @@ def test_the_number_of_waves_is_declared_and_kept(wave):
     for name, scenario in chaos.SCENARIOS.items():
         waves, _ = inject(name, wave)
         assert len(waves) == scenario.waves, name
+
+
+@pytest.mark.parametrize("name", sorted(chaos.SCENARIOS))
+def test_no_injection_mutates_an_event(name, wave):
+    """`Wave.copy` copies the event list and not the events, which is what makes a run of millions
+    fit in memory at all. It is only safe while every injection selects, reorders or duplicates
+    rather than edits, so that is checked here rather than remembered."""
+    before = json.dumps(wave.events, sort_keys=True)
+    inject(name, wave)
+
+    assert json.dumps(wave.events, sort_keys=True) == before
