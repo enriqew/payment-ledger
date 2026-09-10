@@ -19,10 +19,19 @@ from payment_ledger import generator as g
 RUN = g.Run(transactions=250, seed=1, days=14)
 
 
+def as_line(event: dict) -> str:
+    """An event as the generator writes it, which is the form a wave carries it in."""
+    return json.dumps(event, sort_keys=True, separators=(",", ":"))
+
+
 @pytest.fixture(scope="module")
 def wave():
     sim = g.simulate(RUN)
-    return chaos.Wave(sim.events, sim.balance_transactions, sim.daily_balance())
+    return chaos.Wave(
+        [as_line(event) for event in sim.events],
+        sim.balance_transactions,
+        sim.daily_balance(),
+    )
 
 
 @pytest.fixture(scope="module")
@@ -33,8 +42,7 @@ def source(tmp_path_factory, wave):
     built from a directory that cannot say what it holds is refused.
     """
     out = tmp_path_factory.mktemp("generated")
-    for name in chaos.ARTIFACTS:
-        g.write_jsonl(out / f"{name}.jsonl", wave.rows(name))
+    chaos.write_wave(wave, out)
     (out / "run.json").write_text(
         json.dumps(
             {
@@ -103,12 +111,12 @@ def test_a_redelivery_is_the_same_event_again(wave):
     stream = waves[0].events
 
     assert len(stream) == len(wave.events) + injected["redelivered_events"]
-    assert {e["id"] for e in stream} == {e["id"] for e in wave.events}
+    assert {chaos.event_id(e) for e in stream} == {chaos.event_id(e) for e in wave.events}
     # Byte for byte, because a redelivery that differs from its original is a different event and
     # deduplicating it would be luck rather than design.
     by_id = {}
     for event in stream:
-        by_id.setdefault(event["id"], []).append(json.dumps(event, sort_keys=True))
+        by_id.setdefault(chaos.event_id(event), []).append(event)
     for copies in by_id.values():
         assert len(set(copies)) == 1
 
@@ -119,9 +127,9 @@ def test_a_redelivery_arrives_later_than_its_original(wave):
     seen: dict[str, int] = {}
     gaps = []
     for position, event in enumerate(stream):
-        if event["id"] in seen:
-            gaps.append(position - seen[event["id"]])
-        seen.setdefault(event["id"], position)
+        if chaos.event_id(event) in seen:
+            gaps.append(position - seen[chaos.event_id(event)])
+        seen.setdefault(chaos.event_id(event), position)
 
     assert gaps, "nothing was redelivered"
     assert all(gap > 1 for gap in gaps), "a copy landed immediately behind its original"
@@ -134,7 +142,7 @@ def test_out_of_order_keeps_every_event_and_reverses_it(wave):
 
 def test_a_dropped_charge_takes_its_whole_entity_with_it(wave):
     waves, injected = inject("dropped_event", wave)
-    stream = json.dumps(waves[0].events)
+    stream = "\n".join(waves[0].events)
 
     assert injected["silenced_charges"] > 0
     assert injected["removed_events"] >= injected["silenced_charges"]
@@ -188,7 +196,7 @@ def test_the_stream_still_says_the_dispute_was_won(wave):
     waves, injected = inject("reversal_dropped", wave)
     kept = {t["id"] for t in waves[0].balance_transactions}
     lost = [t["id"] for t in wave.balance_transactions if t["id"] not in kept]
-    stream = json.dumps(waves[0].events)
+    stream = "\n".join(waves[0].events)
 
     assert lost
     assert all(transaction_id in stream for transaction_id in lost)
@@ -210,8 +218,17 @@ def test_the_lookup_agrees_with_the_scan_it_replaced(wave):
 
     assert needles
     for event in wave.events:
-        scanned = any(name in json.dumps(event) for name in needles)
-        assert scanned == bool(needles & chaos.mentions(event)), event["id"]
+        scanned = any(name in event for name in needles)
+        assert scanned == bool(needles & chaos.mentions(event)), chaos.event_id(event)
+
+
+def test_the_event_id_is_the_one_parsing_would_have_read(wave):
+    """The id is read off the line rather than parsed out of it, and the two have to agree. The
+    trap this walks into is that the generator sorts an event's keys, so `data` comes before `id`
+    and the first `"id"` in the line belongs to the object rather than to the delivery.
+    """
+    for event in wave.events:
+        assert chaos.event_id(event) == json.loads(event)["id"]
 
 
 def test_an_identifier_is_read_whole_rather_than_as_a_substring(wave):
@@ -290,9 +307,7 @@ def test_an_arm_records_the_run_it_damaged(source, tmp_path):
 
 def test_a_source_that_cannot_say_what_it_holds_is_refused(tmp_path, wave):
     bare = tmp_path / "bare"
-    bare.mkdir()
-    for name in chaos.ARTIFACTS:
-        g.write_jsonl(bare / f"{name}.jsonl", wave.rows(name))
+    chaos.write_wave(wave, bare)
 
     with pytest.raises(SystemExit, match="run.json"):
         chaos.build("baseline", bare, tmp_path / "out", seed=1)
@@ -408,7 +423,7 @@ def test_what_is_held_back_is_held_back_on_both_sides(wave):
     waves, _ = inject("late_arrival", wave)
     first, second = waves
 
-    early = json.dumps(first.events)
+    early = "\n".join(first.events)
     for txn in second.balance_transactions:
         if txn not in first.balance_transactions:
             assert txn["source"] not in early
@@ -443,11 +458,11 @@ def test_the_number_of_waves_is_declared_and_kept(wave):
 
 
 @pytest.mark.parametrize("name", sorted(chaos.SCENARIOS))
-def test_no_injection_mutates_an_event(name, wave):
-    """`Wave.copy` copies the event list and not the events, which is what makes a run of millions
-    fit in memory at all. It is only safe while every injection selects, reorders or duplicates
-    rather than edits, so that is checked here rather than remembered."""
-    before = json.dumps(wave.events, sort_keys=True)
+def test_no_injection_touches_the_stream_it_was_given(name, wave):
+    """`Wave.copy` copies the event list and not the lines in it, which is what makes a run of
+    millions fit in memory at all. A line is a string and cannot be edited in place, so what is
+    left to check is that no injection reaches into the original list."""
+    before = list(wave.events)
     inject(name, wave)
 
-    assert json.dumps(wave.events, sort_keys=True) == before
+    assert wave.events == before

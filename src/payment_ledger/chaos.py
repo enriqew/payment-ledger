@@ -59,23 +59,35 @@ MINIMUM_DAMAGE = 3
 
 @dataclass
 class Wave:
-    """One delivery of inputs into the pipeline: what arrives, and what the processor says."""
+    """One delivery of inputs into the pipeline: what arrives, and what the processor says.
 
-    events: list[dict]
+    **The stream is carried as the text that arrived, not as parsed events.** Not one of the six
+    injections edits a field inside an event: they select, reorder, duplicate and drop whole
+    events, so parsing four and a half million of them only to serialize them back is work done to
+    reach the same bytes. It is also the difference between a suite that runs at a million and one
+    that does not, measured: the parsed stream is forty two gigabytes, the same stream as lines is
+    nine, and the version that parsed it died on the fourth arm.
+
+    It removes a risk as well as a cost. An injector that reparses and rewrites an event it did not
+    touch is testing our JSON writer, and a scenario is supposed to change exactly what it says it
+    changes. Bronze stores the payload as the exact string that arrived for the same reason.
+
+    The processor's own two artifacts stay parsed. The rounding drift edits a field in a balance
+    transaction, the late arrival re-walks the reported balance, and there are three orders of
+    magnitude fewer of them.
+    """
+
+    events: list[str]
     balance_transactions: list[dict]
     daily_balance: list[dict]
 
     def copy(self) -> Wave:
         """A copy an injection can damage without touching the original.
 
-        The events are copied as a list rather than as their contents, which at a million
-        transactions is the difference between thirty six megabytes of pointers and a second copy
-        of twenty gigabytes of payloads. That is safe because of a property of the injections
-        rather than of the data: none of them mutates an event. They select, reorder and duplicate,
-        and the one that duplicates deep copies the handful it repeats. A test holds them to it.
+        The events are copied as a list rather than as their contents, which is safe without any
+        argument about the injections now that a line is a string: there is nothing to mutate.
 
-        The balance transactions are copied deeply, because the rounding drift does mutate them and
-        there are three orders of magnitude fewer.
+        The balance transactions are copied deeply, because the rounding drift does mutate them.
         """
         return Wave(
             events=list(self.events),
@@ -83,7 +95,7 @@ class Wave:
             daily_balance=copy.deepcopy(self.daily_balance),
         )
 
-    def rows(self, artifact: str) -> list[dict]:
+    def rows(self, artifact: str) -> list[str] | list[dict]:
         return getattr(self, artifact)
 
 
@@ -138,8 +150,13 @@ def charge_transactions(wave: Wave) -> list[dict]:
 # names match this too, which costs nothing: what is compared against it is a set of identifiers.
 IDENTIFIER = re.compile(r"[a-z]+_[A-Za-z0-9]+")
 
+# The delivery's own id, which is the one field two scenarios read. `evt_` is what separates it
+# from the ids inside the payload, and it is needed because the generator sorts an event's keys:
+# `data` comes before `id`, so the first `"id"` in the line belongs to the object, not the event.
+EVENT_ID = re.compile(r'"id"\s*:\s*"(evt_[^"]+)"')
 
-def mentions(event: dict) -> set[str]:
+
+def mentions(event: str) -> set[str]:
     """Every identifier the event names, wherever inside it the name sits.
 
     Two scenarios need to find the events that refer to an entity, and they cannot do it by reading
@@ -147,14 +164,26 @@ def mentions(event: dict) -> set[str]:
     the point of silencing an entity is that *everything* about it goes with it.
 
     The obvious way to write that is `any(name in json.dumps(event) for name in names)`, and at a
-    thousand transactions it is indistinguishable from this. At a million it does not finish.
-    `json.dumps` sits inside the generator, so the event is serialized once per candidate name, and
-    two per cent of a million charges is forty thousand names against four and a half million
-    events: a hundred and seventy nine billion serializations, which is weeks. This serializes once
-    and intersects sets, so the cost is the length of the stream rather than its product with the
-    damage. A test holds the two to the same answer.
+    thousand transactions it is indistinguishable from this. At a million it does not finish: the
+    serialization sits inside the generator, so the event is serialized once per candidate name,
+    and two per cent of a million charges is forty thousand names against four and a half million
+    events. This reads the line once and intersects sets, so the cost is the length of the stream
+    rather than its product with the damage. A test holds the two to the same answer.
     """
-    return set(IDENTIFIER.findall(json.dumps(event)))
+    return set(IDENTIFIER.findall(event))
+
+
+def event_id(event: str) -> str:
+    """The delivery id of a line of the stream.
+
+    A test holds this to the same answer as parsing the line and reading `id`, which is what it
+    replaces: the parse is correct and, done four and a half million times to collect a list of
+    ids, is most of the reason the injector could not be run at a million.
+    """
+    found = EVENT_ID.search(event)
+    if not found:
+        raise SystemExit(f"a line of the stream carries no event id: {event[:120]}")
+    return found.group(1)
 
 
 # --- the six ------------------------------------------------------------------------------------
@@ -178,17 +207,18 @@ def duplicate_delivery(wave: Wave, rng: random.Random) -> Injection:
     than beside it, because a redelivery that arrives immediately is the easy case.
     """
     damaged = wave.copy()
-    chosen = take([e["id"] for e in damaged.events], rng, rate=0.05)
+    chosen = take([event_id(e) for e in damaged.events], rng, rate=0.05)
     wanted = set(chosen)
 
-    ordered: list[tuple[float, dict]] = [
+    ordered: list[tuple[float, str]] = [
         (float(index), event) for index, event in enumerate(damaged.events)
     ]
     for index, event in enumerate(damaged.events):
-        if event["id"] in wanted:
+        if event_id(event) in wanted:
             # Somewhere later in the stream, the way a retry lands behind whatever was in flight
-            # when it was sent rather than immediately after its original.
-            ordered.append((index + rng.randrange(1, 40) + 0.5, copy.deepcopy(event)))
+            # when it was sent rather than immediately after its original. The copy is the same
+            # line, so byte identical is what it is rather than what a writer has to reproduce.
+            ordered.append((index + rng.randrange(1, 40) + 0.5, event))
 
     damaged.events = [event for _, event in sorted(ordered, key=lambda pair: pair[0])]
     return [damaged], {"redelivered_events": len(chosen), "event_ids": sorted(chosen)[:10]}
@@ -318,10 +348,10 @@ def late_arrival(wave: Wave, rng: random.Random) -> Injection:
 
     early = [t for t in damaged.balance_transactions if t["id"] not in late]
     held = [e for e in damaged.events if sources & mentions(e)]
-    held_ids = {e["id"] for e in held}
+    held_ids = {event_id(e) for e in held}
 
     first = Wave(
-        events=[e for e in damaged.events if e["id"] not in held_ids],
+        events=[e for e in damaged.events if event_id(e) not in held_ids],
         balance_transactions=early,
         daily_balance=walk_daily_balance(early),
     )
@@ -460,33 +490,51 @@ SCENARIOS: dict[str, Scenario] = {
 
 
 def read_wave(source: Path) -> Wave:
-    def rows(name: str) -> list[dict]:
+    """The generated run, with the stream kept as text and the processor's artifacts parsed.
+
+    Line by line rather than `read_text().splitlines()`, which holds the whole file and then the
+    list of lines split out of it before a single row exists. Together with keeping the stream
+    unparsed, that is what took the cost of loading a million-transaction run from something no
+    machine here has to nine gigabytes.
+    """
+
+    def lines(name: str):
         path = source / f"{name}.jsonl"
         if not path.exists():
             raise SystemExit(
                 f"{path} is missing. A scenario is a perturbation of a generated run, so\n"
                 "generate one first: make generate N=1000"
             )
-        # Line by line rather than `read_text().splitlines()`. The parsed rows are the only thing
-        # worth holding, and reading the file whole holds two more copies of it first: the text,
-        # and then the list of lines split out of it. At a million transactions the stream is nine
-        # gigabytes, so the version that read it whole needed some thirty eight before it had
-        # parsed anything, and died on the fourth arm of a suite the first three had survived.
         with path.open(encoding="utf-8") as handle:
-            return [json.loads(line) for line in handle if line.strip()]
+            for line in handle:
+                line = line.strip()
+                if line:
+                    yield line
 
-    return Wave(*(rows(name) for name in ARTIFACTS))
+    return Wave(
+        events=list(lines("events")),
+        balance_transactions=[json.loads(line) for line in lines("balance_transactions")],
+        daily_balance=[json.loads(line) for line in lines("daily_balance")],
+    )
 
 
 def write_wave(wave: Wave, out: Path) -> dict[str, int]:
+    """The wave back onto disk, in the form the pipeline reads it from.
+
+    The stream goes out as the lines that came in. An event a scenario did not touch leaves this
+    byte for byte as it arrived, which is the property that lets a run be compared against the
+    undamaged one at all.
+    """
     out.mkdir(parents=True, exist_ok=True)
     counts = {}
     for name in ARTIFACTS:
         path = out / f"{name}.jsonl"
+        rows = wave.rows(name)
         with path.open("w", encoding="utf-8", newline="\n") as handle:
-            for row in wave.rows(name):
-                handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
-        counts[name] = len(wave.rows(name))
+            for row in rows:
+                line = row if name == "events" else json.dumps(row, sort_keys=True, separators=(",", ":"))
+                handle.write(line + "\n")
+        counts[name] = len(rows)
     return counts
 
 

@@ -154,7 +154,11 @@ def test_clearing_an_arm_keeps_what_it_found(tmp_path, monkeypatch):
     for name in ("scenario.json", "report.json", "run_results.json"):
         (arm / name).write_text(f'{{"file": "{name}"}}', encoding="utf-8")
 
+    # Both doors out of this function, not one. `run` starts the containers and `drop_topics`
+    # talks to the broker directly, so stubbing only the first left the test asking a Kafka that
+    # is not there to delete a topic, and it passed or failed on whether a stack happened to be up.
     monkeypatch.setattr(chaos_run, "run", lambda step: "")
+    monkeypatch.setattr(chaos_run, "drop_topics", lambda scenarios: None)
     chaos_run.clear("dropped_event", out)
 
     assert not (arm / "wave1").exists(), "the damaged stream is what an arm costs"
