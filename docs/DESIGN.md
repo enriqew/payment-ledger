@@ -317,6 +317,26 @@ Each is injected deliberately by the chaos module and each must be caught.
 Until phase 5 that table was six claims. Each row is now a scenario in `src/payment_ledger/chaos.py`
 and a test keeps the two lists equal, so a row nobody wired up fails the build.
 
+**One failure per run, which is why the suite is seven runs and not one.** Six failures plus the
+undamaged control, each taken through the whole pipeline on its own. Injecting them together would
+be one run and would answer nothing, for two separate reasons.
+
+The first is attribution. Put a duplicated event and a dropped one into the same run, watch three
+tests go red, and there is no way to say which injection produced which failure. That matters
+because the suite does not check that something went wrong. It checks that exactly what the
+scenario declared went wrong and that nothing else did, and neither half of that sentence can be
+evaluated on a run carrying more than one cause.
+
+The second is the control. Every arm compares its counts against the baseline's, so the baseline
+has to be a run in which nothing was injected. An arm that shared a run with an injection would be
+measured against a yardstick that had itself been bent.
+
+The cost follows from this and is worth stating plainly, because it is the only reason the suite
+and the ledger are ever run at different sizes: six failures cost seven complete pipelines, not
+one. The suite therefore runs at whatever size is affordable seven times over, the export records
+the suite's run and the ledger's separately, and a page reading both is expected to say so when
+they differ.
+
 **A scenario perturbs one side and not the other.** The generator emits three artifacts: the
 webhook stream, the balance transaction list, and the balance the processor reports. A scenario
 damages one and leaves the rest alone, which is what makes a divergence appear where a real one

@@ -4,6 +4,15 @@ Section 6 of the design lists six ways a payment pipeline goes wrong and, for ea
 is supposed to catch it. Up to here every one of them was an argument. This module turns each into
 an input a run can be replayed from, and the suite around it turns the claim into a verdict.
 
+**Seven runs, not one.** Six failures and the undamaged control, each taken through the whole
+pipeline on its own. Injecting them together would be cheaper and would answer nothing. Two
+failures in one run means three red tests nobody can attribute, and this suite does not check that
+something went wrong: it checks that exactly what the scenario declared went wrong and that nothing
+else did, neither of which can be read off a run carrying more than one cause. The control has to
+be undamaged for the same reason, because every other arm compares its counts against it. The cost
+is the consequence and it is the only reason the suite and the ledger are ever run at different
+sizes: six failures cost seven complete pipelines.
+
 **A scenario perturbs one side and not the other.** That is the whole mechanism. The generator
 emits three artifacts: the webhook stream, the balance transaction list, and the balance the
 processor reports. A scenario damages one of them and leaves the rest alone, which is what makes a

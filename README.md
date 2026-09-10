@@ -150,8 +150,10 @@ all sixty two dbt nodes pass, the four invariants and the flow conservation amon
 | `revenue:gross_sales` | -27,755,015,442 | 1,000,000 |
 | **total** | **0** | 5,544,764 |
 
-**Five defects, and every one of them is invisible at a thousand.** They are worth listing because
-four of the five were in code that had been passing its tests for weeks.
+**Nine defects, and every one of them is invisible at a thousand.** Five in the ledger, listed
+first, and four more that only appeared later when the chaos suite was run at the same size. They
+are worth listing because almost all of them were in code that had been passing its tests for
+weeks, and none of them is in the pipeline's shape.
 
 | What broke | Where | How it showed up |
 |---|---|---|
@@ -172,6 +174,33 @@ The fixes are in the four places that were wrong rather than in the numbers that
 the balance transaction ids come from a counter of their own, the producer waits for the client's
 queue to drain, the silver stream bounds its micro-batch and uses a trigger that respects the
 bound, and the Spark driver gets six gigabytes instead of the default one.
+
+### Four more, when the chaos suite was run at the same size
+
+Running the seven arms at a million found four defects too, and all four are in the injector rather
+than in the pipeline. That is the harder kind to notice. A broken injector does not fail a run, it
+produces one that never finishes, and the line it is stuck in prints nothing while it does.
+
+| What broke | How it showed up |
+|---|---|
+| Copying a wave deep copied every event | 20 GB duplicated to produce a list nothing mutates. The events are copied as a list of pointers now, which is safe because no injection edits an event, and a test holds them to it |
+| Two scenarios scanned with `any(name in json.dumps(event) for name in names)` | The serialization is inside the generator, so the event is serialized once per name: 40,000 names against 4,480,064 events is 179 billion serializations. It sat at 100% of one core for eighty four minutes before it was killed |
+| Reading a wave read the file whole | `read_text().splitlines()` holds the text and then the list of lines split out of it before a row is parsed. Nine gigabytes of stream needed some thirty eight to load |
+| The stream was held as parsed events | **41.9 GB, measured.** Three arms got through on paging and the fourth died twice, once as `MemoryError` and once as an `OSError` the allocator surfaced instead |
+
+The last one is the one that changed a design rather than a line. Not one of the six injections
+edits a field inside an event: they select, reorder, duplicate and drop whole events. Parsing four
+and a half million of them to serialize them back is work done to arrive at the same bytes, so a
+wave now carries the stream as the text that arrived. That is 10.9 GB instead of 41.9 and loads in
+sixty nine seconds, and it removes a risk along with the cost: an injector that reparses and
+rewrites an event it did not touch is testing our JSON writer rather than the pipeline. A
+redelivery is byte identical because it is the same line, not because a writer reproduced it.
+Bronze stores the payload as the exact string that arrived, and says so, for the same reason.
+
+The two fields still needed are read off the line, and each has a test holding it to what parsing
+would have answered. One of those walks into a trap worth naming: the generator sorts an event's
+keys, so `data` comes before `id` and the first `"id"` in a line belongs to the object rather than
+to the delivery.
 
 **What this does not say.** No throughput figure appears here, at this size or any other. The run
 was sliced into six deliveries of eight hundred thousand events because the broker's log lives on a
@@ -343,6 +372,16 @@ The six failures at the top of this README were six claims until phase 5. Each i
 that damages a real run, takes it through the whole pipeline, and is judged against what it said
 would happen.
 
+**One failure per run, so the suite is seven runs and not one.** Six failures and an undamaged
+control, each through the whole pipeline on its own. Two injections in a single run would produce
+red tests nobody can attribute, and attribution is the whole point: the suite does not check that
+something went wrong, it checks that exactly what the scenario declared went wrong and that nothing
+else did. The control has to be clean for the same reason, since every other arm compares its
+counts against it. What follows is the cost, and it is the only reason the suite and the ledger are
+ever run at different sizes: six failures cost seven complete pipelines, so the suite runs at a
+size that is affordable seven times over and the export records both runs rather than letting one
+page count two different things without saying so.
+
 ```bash
 make scenarios                          # the six, and what is supposed to catch each
 make chaos                              # all seven arms, injected, run and judged
@@ -360,17 +399,22 @@ dbt tests must fail and, where the injection determines it, on exactly how many 
 fails when a detection did not fire, and equally when a test fires that no scenario asked for. A
 suite that only checks "something went wrong" says nothing about whether the right thing did.
 
-This is one `N=1000` run, seed 1, all seven arms:
+This is one `N=1000000` run, seed 1, all seven arms, 4,480,064 events each time. Every arm came back
+`as described`: every declared detection fired and no test fired that no scenario asked for.
 
 | Arm | What it does to the run | What the build did |
 |---|---|---|
-| baseline | nothing | 41 tests pass. 4602 events, 5608 postings, trial balance 0, 28,877,624 available |
-| Duplicate delivery | redelivers 230 events, later in the stream | bronze holds 4832 deliveries of 4602 events, silver holds 4602, the ledger is unchanged to the posting. Nothing fails |
-| Out-of-order arrival | reverses arrival order end to end | every count identical to the baseline, including the checksum over the dates the charges carry. Nothing fails |
-| Dropped event | silences 20 charges, 84 events | `assert_the_stream_saw_every_source` **FAIL 21**. 980 charges in silver, and the ledger is identical to the baseline: 5608 postings, reconciliation clean |
-| Late arrival after the close | holds 23 movements and their 64 events back to a second wave | nothing fails. Two closes taken, **60 days restated**, all 60 explained by what arrived late, and the final books equal the undamaged run exactly |
-| Currency and rounding | adds one minor unit to the net of 20 charges | `assert_entries_balance` **FAIL 20**, trial balance 20 instead of 0, and the daily close and the reconciliation are **never published** |
-| Reversal | drops 3 won-dispute reversals from the list | `assert_the_list_holds_every_expanded_transaction` **FAIL 3** and `assert_no_unexplained_difference` **FAIL 43**. Every entry still balances and the trial balance is still 0 |
+| baseline | nothing | 5,544,764 postings, trial balance 0, no coverage gap, no restatement, no reconciliation break |
+| Duplicate delivery | redelivers 224,003 events, later in the stream | bronze holds 4,704,067 deliveries of 4,480,064 events, silver holds 4,480,064, the ledger is unchanged to the posting. Nothing fails |
+| Out-of-order arrival | reverses arrival order end to end, all 4,480,064 | every count identical to the baseline. Nothing fails |
+| Dropped event | silences 20,000 charges, taking 89,480 events with them | `assert_the_stream_saw_every_source` **FAIL 22,691**. 980,000 charges in silver, and the ledger is identical to the baseline: 5,544,764 postings, reconciliation clean |
+| Late arrival after the close | holds 22,724 movements and their 58,571 events back to a second wave | nothing fails. **72 days restated**, every one explained by what arrived late, and the final books equal the undamaged run exactly |
+| Currency and rounding | adds one minor unit to the net of 20,000 charges | `assert_entries_balance` **FAIL 20,000**, trial balance 20,000 instead of 0, and the daily close and the reconciliation are **never published** |
+| Reversal | drops 324 won-dispute reversals from the list | `assert_the_list_holds_every_expanded_transaction` **FAIL 324** and `assert_no_unexplained_difference` **FAIL 60**. Every entry still balances and the trial balance is still 0 |
+
+The suite runs at `N=1000` by default, which is what somebody can clone and reproduce in a few
+minutes. The million above is what it looks like when the same seven arms are paid for at a hundred
+times the size, and getting there took four fixes to the injector rather than to the pipeline.
 
 **A namespace per arm, and nothing dropped between them.** Each scenario runs into
 `<scenario>_bronze`, `<scenario>_silver` and `<scenario>_gold`, with a Kafka topic and a Spark
