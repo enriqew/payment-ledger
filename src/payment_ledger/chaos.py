@@ -539,9 +539,12 @@ def write_wave(wave: Wave, out: Path) -> dict[str, int]:
     for name in ARTIFACTS:
         path = out / f"{name}.jsonl"
         rows = wave.rows(name)
+        # The stream is carried as the text that arrived; the processor's own two
+        # artifacts are parsed rows, and are serialized back on the way out.
+        as_text = name == "events"
         with path.open("w", encoding="utf-8", newline="\n") as handle:
             for row in rows:
-                line = row if name == "events" else json.dumps(row, sort_keys=True, separators=(",", ":"))
+                line = row if as_text else json.dumps(row, sort_keys=True, separators=(",", ":"))
                 handle.write(line + "\n")
         counts[name] = len(rows)
     return counts
