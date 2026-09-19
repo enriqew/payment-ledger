@@ -263,14 +263,14 @@ def test_no_chaos_at_all_is_allowed():
 
 
 def test_a_whole_suite_is_carried():
-    arms = [arm(name) for name in ["a", "b", "c", "d", "e", "f", "g"][: export.EXPECTED_ARMS]]
+    arms = [arm(f"arm{i}") for i in range(export.EXPECTED_ARMS)]
     files = with_arms(arms)
     export.validate(files)
     assert len(files["chaos.json"]["arms"]) == export.EXPECTED_ARMS
 
 
 def test_an_arm_that_did_not_do_what_it_said_is_refused():
-    arms = [arm(name) for name in ["a", "b", "c", "d", "e", "f", "g"][: export.EXPECTED_ARMS]]
+    arms = [arm(f"arm{i}") for i in range(export.EXPECTED_ARMS)]
     arms[2]["as_described"] = False
 
     with pytest.raises(export.Refused, match="did not do what it said"):
@@ -280,7 +280,7 @@ def test_an_arm_that_did_not_do_what_it_said_is_refused():
 def test_the_suite_says_which_run_it_damaged():
     """The suite takes the pipeline through seven runs, so it is affordable at a size the ledger
     itself may not be. A page showing both has to be able to say which figure came from which."""
-    arms = [arm(name) for name in ["a", "b", "c", "d", "e", "f", "g"][: export.EXPECTED_ARMS]]
+    arms = [arm(f"arm{i}") for i in range(export.EXPECTED_ARMS)]
     files = with_arms(arms)
     export.validate(files)
 
@@ -291,7 +291,7 @@ def test_the_suite_says_which_run_it_damaged():
 def test_arms_from_two_different_runs_are_not_a_suite():
     """Every arm but the control one measures itself against the baseline's counts, so a suite
     assembled out of two sizes compares numbers that were never comparable."""
-    arms = [arm(name) for name in ["a", "b", "c", "d", "e", "f", "g"][: export.EXPECTED_ARMS]]
+    arms = [arm(f"arm{i}") for i in range(export.EXPECTED_ARMS)]
     arms[3]["source_run"] = {"transactions": 50, "seed": 1, "days": 30, "events": "different"}
 
     with pytest.raises(export.Refused, match="different run"):
@@ -299,7 +299,7 @@ def test_arms_from_two_different_runs_are_not_a_suite():
 
 
 def test_an_arm_that_does_not_say_which_run_it_damaged_is_refused():
-    arms = [arm(name) for name in ["a", "b", "c", "d", "e", "f", "g"][: export.EXPECTED_ARMS]]
+    arms = [arm(f"arm{i}") for i in range(export.EXPECTED_ARMS)]
     arms[1]["source_run"] = None
 
     with pytest.raises(export.Refused, match="which run it was built from"):

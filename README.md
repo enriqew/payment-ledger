@@ -13,8 +13,8 @@ against a sandbox account and redacted before they are committed. Event *volume*
 generator that replays those captured shapes across a simulated calendar. Both halves are stated
 wherever a number is reported.
 
-The subject of the project is not throughput. It is the six failures that make money hard, each one
-injected deliberately and each one caught:
+The subject of the project is not throughput. It is the seven failures that make money hard, each
+one injected deliberately and each one caught:
 
 | Failure | Why it happens | What the pipeline does |
 |---|---|---|
@@ -24,6 +24,7 @@ injected deliberately and each one caught:
 | Dropped event | A delivery is lost and never retried inside its window | Detected as a gap against the processor's own balance transaction list |
 | Currency and rounding | Multi-currency settlement in integer minor units | No float touches a monetary value at any layer |
 | Reversal | A won dispute moves the balance backwards, and the fee stays | Signed postings, no assumption that balances only grow |
+| A transaction the processor never reported | A double post, a bad backfill, a movement invented upstream | Caught only against the reported balance. Every invariant inside the books passes |
 
 Full design: [`docs/DESIGN.md`](docs/DESIGN.md).
 
@@ -372,7 +373,7 @@ The six failures at the top of this README were six claims until phase 5. Each i
 that damages a real run, takes it through the whole pipeline, and is judged against what it said
 would happen.
 
-**One failure per run, so the suite is seven runs and not one.** Six failures and an undamaged
+**One failure per run, so the suite is eight runs and not one.** Seven failures and an undamaged
 control, each through the whole pipeline on its own. Two injections in a single run would produce
 red tests nobody can attribute, and attribution is the whole point: the suite does not check that
 something went wrong, it checks that exactly what the scenario declared went wrong and that nothing

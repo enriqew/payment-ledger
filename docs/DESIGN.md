@@ -305,6 +305,12 @@ that is the ledger rewriting a published figure for a reason nothing accounts fo
 
 Each is injected deliberately by the chaos module and each must be caught.
 
+Seven rows, though the section is still named for the six the design started with. The seventh was
+added in phase 7, after the write-up went to say that a transaction the processor never reported
+passes every internal invariant, and the repository had only prose to back it: that claim had been
+made by hand in phase 4 and never wired up. A claim a reader cannot replay is the thing this
+section exists to stop.
+
 | Failure | Detection |
 |---|---|
 | Duplicate delivery | Dedup on `event.id`. Bronze count exceeds silver count; the ledger is unchanged |
@@ -313,11 +319,12 @@ Each is injected deliberately by the chaos module and each must be caught.
 | Dropped event | A gap against the processor's balance transaction list |
 | Currency and rounding | Integer minor units end to end; FX and rounding drift accounted for, not absorbed |
 | Reversal | Signed postings; a won dispute returns the amount and keeps the fee |
+| A transaction the processor never reported | The daily close against the reported balance. Nothing inside the books can see it: the entries balance, the trial balance is zero, and the coverage comparison has nothing to say because the entity was announced |
 
 Until phase 5 that table was six claims. Each row is now a scenario in `src/payment_ledger/chaos.py`
 and a test keeps the two lists equal, so a row nobody wired up fails the build.
 
-**One failure per run, which is why the suite is seven runs and not one.** Six failures plus the
+**One failure per run, which is why the suite is eight runs and not one.** Seven failures plus the
 undamaged control, each taken through the whole pipeline on its own. Injecting them together would
 be one run and would answer nothing, for two separate reasons.
 

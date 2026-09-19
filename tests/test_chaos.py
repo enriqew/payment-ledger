@@ -190,6 +190,47 @@ def test_only_a_reversal_goes_missing(wave):
     assert all(t["reporting_category"] == "dispute_reversal" for t in lost)
 
 
+def test_the_phantom_only_adds_to_the_list(wave):
+    """It is the one injection that adds rather than removing or reordering, and it touches one of
+    the three artifacts. The stream and the reported balance are what it is measured against."""
+    waves, injected = inject("unreported_transaction", wave)
+    damaged = waves[0]
+    before = {t["id"] for t in wave.balance_transactions}
+    added = [t for t in damaged.balance_transactions if t["id"] not in before]
+
+    assert len(added) == injected["phantom_transactions"] > 0
+    assert damaged.events == wave.events
+    assert damaged.daily_balance == wave.daily_balance
+    assert [t for t in wave.balance_transactions if t["id"] not in before] == []
+
+
+def test_the_phantom_hangs_off_a_source_the_stream_announced(wave):
+    """The whole isolation of this scenario, and the one property a well meaning edit would break.
+
+    Give the phantom a source id of its own and `coverage_gaps` finds it, because the stream never
+    announced that entity, and the arm stops being about the reconciliation at all: it becomes a
+    second dropped event wearing a different name. Cloning a charge the stream did announce leaves
+    the coverage comparison with nothing to say, so the only check left that can see the phantom is
+    the one reading the balance the pipeline did not produce.
+    """
+    waves, _ = inject("unreported_transaction", wave)
+    before = {t["id"] for t in wave.balance_transactions}
+    added = [t for t in waves[0].balance_transactions if t["id"] not in before]
+    announced = {t["source"] for t in wave.balance_transactions}
+
+    assert added
+    assert all(phantom["source"] in announced for phantom in added)
+
+
+def test_the_phantom_carries_an_id_of_its_own(wave):
+    """Two movements sharing an id is a different failure, and one the uniqueness test on the
+    source would catch first, which would make this arm fail for a reason it did not declare."""
+    waves, _ = inject("unreported_transaction", wave)
+    ids = [t["id"] for t in waves[0].balance_transactions]
+
+    assert len(ids) == len(set(ids))
+
+
 def test_the_stream_still_says_the_dispute_was_won(wave):
     """Which is what makes it findable. The reversal is expanded inside the closing event, so the
     stream carries a copy of the transaction the list is missing."""
@@ -433,8 +474,12 @@ def test_what_is_held_back_is_held_back_on_both_sides(wave):
 
 
 def test_every_failure_the_design_lists_has_a_scenario():
-    """Section 6 of the design is a table of six failures and what catches each. It was a table of
-    claims until this phase, and the way it goes back to being one is a row nobody wired up."""
+    """Section 6 of the design is a table of the failures and what catches each. It was a table of
+    claims until this phase, and the way it goes back to being one is a row nobody wired up.
+
+    The count is asserted as well as the pairing. Without it a row deleted from the design and a
+    scenario deleted from the code would agree with each other and the suite would quietly
+    shrink."""
     design = (g.config.REPO_ROOT / "docs" / "DESIGN.md").read_text(encoding="utf-8")
     section = design.split("## 6. The six failures")[1].split("\n## ")[0]
     listed = {
@@ -444,7 +489,7 @@ def test_every_failure_the_design_lists_has_a_scenario():
     } - {"Failure"}
 
     covered = {s.failure for s in chaos.SCENARIOS.values() if s.name != "baseline"}
-    assert len(listed) == 6
+    assert len(listed) == 7
     assert listed == covered
 
 

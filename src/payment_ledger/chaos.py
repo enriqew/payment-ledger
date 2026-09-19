@@ -1,17 +1,17 @@
-"""Phase 5: the six failures, injected on purpose.
+"""Phase 5: the seven failures, injected on purpose.
 
-Section 6 of the design lists six ways a payment pipeline goes wrong and, for each, the thing that
-is supposed to catch it. Up to here every one of them was an argument. This module turns each into
-an input a run can be replayed from, and the suite around it turns the claim into a verdict.
+Section 6 of the design lists seven ways a payment pipeline goes wrong and, for each, the thing
+that is supposed to catch it. Up to here every one of them was an argument. This module turns each
+into an input a run can be replayed from, and the suite around it turns the claim into a verdict.
 
-**Seven runs, not one.** Six failures and the undamaged control, each taken through the whole
+**Eight runs, not one.** Seven failures and the undamaged control, each taken through the whole
 pipeline on its own. Injecting them together would be cheaper and would answer nothing. Two
 failures in one run means three red tests nobody can attribute, and this suite does not check that
 something went wrong: it checks that exactly what the scenario declared went wrong and that nothing
 else did, neither of which can be read off a run carrying more than one cause. The control has to
 be undamaged for the same reason, because every other arm compares its counts against it. The cost
 is the consequence and it is the only reason the suite and the ledger are ever run at different
-sizes: six failures cost seven complete pipelines.
+sizes: seven failures cost eight complete pipelines.
 
 **A scenario perturbs one side and not the other.** That is the whole mechanism. The generator
 emits three artifacts: the webhook stream, the balance transaction list, and the balance the
@@ -26,10 +26,10 @@ and it fails both ways: a scenario nobody caught fails, and so does a scenario t
 it was not supposed to touch. A chaos suite that only checks "something went wrong" tells you
 nothing about whether the right thing went wrong.
 
-**Waves, because one of the six is a matter of timing.** A late arrival is not a corrupt payload,
+**Waves, because one of the seven is a matter of timing.** A late arrival is not a corrupt payload,
 it is a correct payload that shows up after the day it belongs to was closed. So a scenario is a
 list of waves rather than a single set of files, and the runner takes the pipeline through each in
-turn. Five of the six need one wave. The late one needs two, and the second is the interesting one.
+turn. Six of the seven need one wave. The late one needs two, and the second is the interesting one.
 
 Everything here stays simulated. A scenario is a deterministic function of the baseline artifacts
 and a seed, so a run that caught something can be reproduced exactly, which is the difference
@@ -114,7 +114,7 @@ Injection = tuple[list[Wave], dict]
 
 @dataclass(frozen=True)
 class Scenario:
-    """One of the six failures, with the detection it is meant to trip.
+    """One of the seven failures, with the detection it is meant to trip.
 
     `dbt_failures` maps a test name to the number of rows it must fail on. That number is either an
     integer, or the name of a count the injection reports, which is resolved when the scenario is
@@ -195,7 +195,7 @@ def event_id(event: str) -> str:
     return found.group(1)
 
 
-# --- the six ------------------------------------------------------------------------------------
+# --- the seven ------------------------------------------------------------------------------------
 
 
 def baseline(wave: Wave, rng: random.Random) -> Injection:
@@ -330,6 +330,40 @@ def reversal_dropped(wave: Wave, rng: random.Random) -> Injection:
     lost = {t["id"] for t in take(reversals, rng)}
     damaged.balance_transactions = [t for t in damaged.balance_transactions if t["id"] not in lost]
     return [damaged], {"lost_reversals": len(lost), "transaction_ids": sorted(lost)[:10]}
+
+
+def unreported_transaction(wave: Wave, rng: random.Random) -> Injection:
+    """A movement in the list that the processor's own balance never accounted for.
+
+    The other six damage something and the damage shows up somewhere inside the pipeline. This one
+    does not. The ledger posts from the balance transaction list, so an extra well formed movement
+    in that list gets posted like any other: its two entries balance, the trial balance still sums
+    to zero, every transaction in the list is posted, and the available balance is still explained.
+    Three of the four invariants pass on books that are wrong by exactly one transaction.
+
+    **It reuses the source of the transaction it clones, and that is the whole isolation.** Give
+    the phantom an invented source id and the stream will not have announced it, `coverage_gaps`
+    will name it, and the scenario becomes an expensive duplicate of the dropped event. Hanging it
+    off a charge the stream did announce leaves the coverage comparison with nothing to say, which
+    is what makes the reconciliation the only thing left that can see it.
+
+    The reported balance is not touched, which is the other half. The money is in our books and not
+    in the processor's, which is the direction a double post takes and the one a ledger cannot
+    detect by reading itself.
+    """
+    damaged = wave.copy()
+    originals = take(charge_transactions(damaged), rng)
+    phantoms = []
+    for original in originals:
+        phantom = copy.deepcopy(original)
+        phantom["id"] = f"{original['id']}_phantom"
+        phantoms.append(phantom)
+    damaged.balance_transactions.extend(phantoms)
+    return [damaged], {
+        "phantom_transactions": len(phantoms),
+        "net_posted_and_never_reported": sum(p["net"] for p in phantoms),
+        "transaction_ids": sorted(p["id"] for p in phantoms)[:10],
+    }
 
 
 def late_arrival(wave: Wave, rng: random.Random) -> Injection:
@@ -489,6 +523,26 @@ SCENARIOS: dict[str, Scenario] = {
                 ["gold_postings", "<", "baseline:gold_postings"],
                 ["gold_reconciliation_breaks", ">", 0],
                 ["gold_coverage_gaps", ">", 0],
+            ],
+        ),
+        Scenario(
+            name="unreported_transaction",
+            failure="A transaction the processor never reported",
+            detection="the daily close against the balance the processor reports, which is the "
+            "only check that reads something the pipeline did not produce",
+            inject=unreported_transaction,
+            dbt_failures={"assert_no_unexplained_difference": None},
+            metrics=[
+                # The stream is untouched, so everything built from it matches the control.
+                ["silver_events", "==", "baseline:silver_events"],
+                # The phantom was posted like any other movement, so there are more postings than
+                # the control has, and every one of them balances.
+                ["gold_postings", ">", "baseline:gold_postings"],
+                ["gold_trial_balance", "==", 0],
+                # Nothing else sees it, which is the assertion this scenario exists to make: the
+                # coverage comparison has nothing to say, because the entity was announced.
+                ["gold_coverage_gaps", "==", 0],
+                ["gold_reconciliation_breaks", ">", 0],
             ],
         ),
     )
