@@ -96,7 +96,13 @@ def main(argv: list[str] | None = None) -> int:
 
     for name, value in report.items():
         print(f"  {name:<30} {'-' if value is None else value}")
-    print(f"{MARKER} {json.dumps(report, sort_keys=True)}")
+    # The marker line is read by whoever started the container, and one of the two readers does not
+    # get lines: the DAG's operator hands over the stream in the pieces it arrived in. stdout into a
+    # pipe is block buffered, so the table above could fill a block halfway through this line and
+    # send it in two writes, and the verdict then read half a report. Emptying the buffer first and
+    # writing the line on its own makes it one write, which arrives as one piece.
+    sys.stdout.flush()
+    print(f"{MARKER} {json.dumps(report, sort_keys=True)}", flush=True)
 
     spark.stop()
     return 0

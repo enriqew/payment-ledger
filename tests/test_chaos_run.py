@@ -296,3 +296,24 @@ def test_the_dag_forgets_the_record_before_each_build():
 
     assert "chaos_run.forget_run_results()" in publish
     assert "chaos_run.keep_run_results(out, scenario)" in dag
+
+
+def test_a_report_that_arrived_cut_is_refused_where_it_is_read(tmp_path):
+    """What stopped the eight-arm DAG on 2026-09-24. The operator hands over a container's output in
+    the pieces it arrived in, the marker line came in two, and the first half was written out as the
+    report. It failed two steps later as a JSON error about a delimiter."""
+    line = chaos.MARKER + ' {"bronze_deliveries": 4602, "gold_postings"'
+
+    with pytest.raises(SystemExit, match="arrived cut"):
+        chaos_run.keep_report(line + "\n: 5596}", tmp_path)
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_the_report_line_is_written_in_one_piece():
+    """The cause rather than the symptom: stdout into a pipe is block buffered, so the line has to
+    go out on its own, after everything printed before it."""
+    body = REPORT_JOB[REPORT_JOB.index("for name, value in report.items()") :]
+    marker = body.index('print(f"{MARKER}')
+
+    assert "sys.stdout.flush()" in body[:marker]
+    assert "flush=True" in body[marker : body.index("\n", marker)]

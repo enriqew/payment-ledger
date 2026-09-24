@@ -271,7 +271,18 @@ def keep_report(output: str, out: Path) -> None:
     marker = [line for line in output.splitlines() if line.startswith(chaos.MARKER)]
     if not marker:
         raise SystemExit("the report job printed no measurements, so there is nothing to judge")
-    (out / "report.json").write_text(marker[-1][len(chaos.MARKER) :].strip() + "\n", "utf-8")
+    text = marker[-1][len(chaos.MARKER) :].strip()
+    # Checked here rather than left for the verdict to trip over. A report that arrived in pieces
+    # used to be written out as it was and fail two steps later as a JSON error about a delimiter,
+    # which says nothing about what went wrong.
+    try:
+        json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"the report line arrived cut ({len(text)} characters, {exc.msg} at {exc.pos}), "
+            "so the measurements are not all there to judge"
+        ) from exc
+    (out / "report.json").write_text(text + "\n", "utf-8")
 
 
 def publish(scenario: str, events: Path) -> None:
