@@ -21,7 +21,7 @@ check fails, nothing is written at all.
 | `daily_close.json` | one per day and currency | what the books say that day closed at, and what moved |
 | `reconciliation.json` | one per day and currency | the ledger weighed against the balance the processor reports |
 | `findings.json` | 0 on a healthy run | coverage gaps and restatements, empty when the two inputs agreed and no published day moved |
-| `chaos.json` | one per scenario, or none | the six failures injected on purpose, what fired and whether it was what the scenario said |
+| `chaos.json` | one per scenario, or none | the seven failures injected on purpose, what fired and whether it was what the scenario said |
 
 The contract is the JSON files at the top of `export/`. `export/tables/` beside them holds the raw
 dumps the Spark job wrote, which are an intermediate and not part of it: they have columns the
@@ -30,8 +30,8 @@ contract does not name, and nothing outside this repository should read them.
 `chaos.json` carries its arms in the order the suite runs them, which is the order the design lists
 the failures in rather than the alphabetical order the directories happen to have.
 
-**The suite's run is not always the ledger's, and the manifest says both.** Injecting six failures
-means taking the pipeline through seven runs, once per scenario, so the suite is affordable at a
+**The suite's run is not always the ledger's, and the manifest says both.** Injecting seven failures
+means taking the pipeline through eight runs, once per scenario, so the suite is affordable at a
 size the ledger itself may not be. `manifest.chaos_run` and `chaos.json`'s own `run` carry the
 generated run every arm was damaged from, beside `manifest.run` for the tables. Every arm must have
 been built from the same one: arms from two different runs are not a suite, because every arm but
@@ -69,7 +69,7 @@ a timezone, and a close that means a different day on two machines is the bug th
 UTC to avoid.
 
 **The chaos suite is all of it or none of it.** An export taken before the suite has run carries no
-arms and says so, which is honest. An export carrying three of seven is the one shape that misleads
+arms and says so, which is honest. An export carrying three of eight is the one shape that misleads
 by being true: three arms on a page look exactly like the suite. Every arm carried must also have
 done what its scenario said it would.
 

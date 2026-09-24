@@ -35,7 +35,7 @@ been weighed against the processor's own reported balance: the generator simulat
 from the captured shapes, the producer puts them on Kafka, Spark Structured Streaming lands every
 delivery in `bronze.events`, silver deduplicates that into one row per event and one per charge,
 refund and dispute, and dbt builds the postings, the trial balance, the daily close and the
-reconciliation, with all four invariants as tests that stop the build. The six failures in the
+reconciliation, with all four invariants as tests that stop the build. The seven failures in the
 table above are injected on purpose, one namespace per scenario, and each is checked against what
 it said it would do: `make chaos`. What a dashboard may read, and what the export refuses to
 publish, is `make export` and [`docs/EXPORT.md`](docs/EXPORT.md). What is left is the write-up. The
@@ -189,7 +189,7 @@ produces one that never finishes, and the line it is stuck in prints nothing whi
 | Reading a wave read the file whole | `read_text().splitlines()` holds the text and then the list of lines split out of it before a row is parsed. Nine gigabytes of stream needed some thirty eight to load |
 | The stream was held as parsed events | **41.9 GB, measured.** Three arms got through on paging and the fourth died twice, once as `MemoryError` and once as an `OSError` the allocator surfaced instead |
 
-The last one is the one that changed a design rather than a line. Not one of the six injections
+The last one is the one that changed a design rather than a line. Not one of the seven injections
 edits a field inside an event: they select, reorder, duplicate and drop whole events. Parsing four
 and a half million of them to serialize them back is work done to arrive at the same bytes, so a
 wave now carries the stream as the text that arrived. That is 10.9 GB instead of 41.9 and loads in
@@ -369,7 +369,7 @@ against them rather than guessed at in advance. Spark arrives in phase 1, Airflo
 
 ## The chaos suite
 
-The six failures at the top of this README were six claims until phase 5. Each is now a scenario
+The failures at the top of this README were claims until phase 5. Each is now a scenario
 that damages a real run, takes it through the whole pipeline, and is judged against what it said
 would happen.
 
@@ -379,13 +379,13 @@ red tests nobody can attribute, and attribution is the whole point: the suite do
 something went wrong, it checks that exactly what the scenario declared went wrong and that nothing
 else did. The control has to be clean for the same reason, since every other arm compares its
 counts against it. What follows is the cost, and it is the only reason the suite and the ledger are
-ever run at different sizes: six failures cost seven complete pipelines, so the suite runs at a
-size that is affordable seven times over and the export records both runs rather than letting one
+ever run at different sizes: seven failures cost eight complete pipelines, so the suite runs at a
+size that is affordable eight times over and the export records both runs rather than letting one
 page count two different things without saying so.
 
 ```bash
-make scenarios                          # the six, and what is supposed to catch each
-make chaos                              # all seven arms, injected, run and judged
+make scenarios                          # the seven, and what is supposed to catch each
+make chaos                              # all eight arms, injected, run and judged
 make chaos-one SCENARIO=dropped_event   # one of them
 ```
 
@@ -400,8 +400,10 @@ dbt tests must fail and, where the injection determines it, on exactly how many 
 fails when a detection did not fire, and equally when a test fires that no scenario asked for. A
 suite that only checks "something went wrong" says nothing about whether the right thing did.
 
-This is one `N=1000000` run, seed 1, all seven arms, 4,480,064 events each time. Every arm came back
-`as described`: every declared detection fired and no test fired that no scenario asked for.
+This is one `N=1000000` run, seed 1, all eight arms, 4,480,064 events each time. Every arm came back
+`as described`: every declared detection fired and no test fired that no scenario asked for. The
+first seven ran together; the eighth was added later and ran on its own against a regeneration of
+the same source, whose three sha256 match, which is why the export accepts it as the same suite.
 
 | Arm | What it does to the run | What the build did |
 |---|---|---|
@@ -412,9 +414,10 @@ This is one `N=1000000` run, seed 1, all seven arms, 4,480,064 events each time.
 | Late arrival after the close | holds 22,724 movements and their 58,571 events back to a second wave | nothing fails. **72 days restated**, every one explained by what arrived late, and the final books equal the undamaged run exactly |
 | Currency and rounding | adds one minor unit to the net of 20,000 charges | `assert_entries_balance` **FAIL 20,000**, trial balance 20,000 instead of 0, and the daily close and the reconciliation are **never published** |
 | Reversal | drops 324 won-dispute reversals from the list | `assert_the_list_holds_every_expanded_transaction` **FAIL 324** and `assert_no_unexplained_difference` **FAIL 60**. Every entry still balances and the trial balance is still 0 |
+| A transaction the processor never reported | posts 20,000 phantom movements, net 542,379,361, that the reported balance never saw | `assert_no_unexplained_difference` **FAIL 72**, every day of the calendar, and nothing else. 5,644,764 postings, trial balance 0, no coverage gap: every check inside the books passes |
 
 The suite runs at `N=1000` by default, which is what somebody can clone and reproduce in a few
-minutes. The million above is what it looks like when the same seven arms are paid for at a hundred
+minutes. The million above is what it looks like when the same arms are paid for at a thousand
 times the size, and getting there took four fixes to the injector rather than to the pipeline.
 
 **A namespace per arm, and nothing dropped between them.** Each scenario runs into
@@ -422,12 +425,14 @@ times the size, and getting there took four fixes to the injector rather than to
 checkpoint of its own. When the suite finishes, the damaged run and the run it was measured against
 are both in the catalog, so a difference of twenty charges is a query rather than a claim.
 
-**Two of the six are not caught by an invariant, and that is the finding.** A dropped webhook does
+**Two of the seven are not caught by an invariant, and that is the finding.** A dropped webhook does
 not move a cent. The ledger posts from the balance transaction list, so every entry balances and
 every day reconciles exactly, and what is missing is the business's own record of what the money
 was for. Only a comparison between the two inputs sees it, which is `gold.coverage_gaps`. And a
 late arrival is not a defect at all: it is the normal condition of a payment processor, and what it
-has to produce is a restatement rather than a failure.
+has to produce is a restatement rather than a failure. The phantom is the opposite case: every
+check inside the books passes on it, and the only one that fails is the reconciliation, the one
+invariant that reads something the pipeline did not produce.
 
 **What a restatement looks like.** On the late arrival arm, the third of January moved from
 4,045,390 pending to 4,044,210 and names the one movement that landed after it closed. The fourth
@@ -442,13 +447,16 @@ LEDGER_HOST_ROOT="$(pwd)" make airflow   # on Windows: pwd -W
 make dag
 ```
 
-`airflow/dags/chaos_suite.py` lays the same seven arms out as 84 tasks: inject, create the
-topic, publish, the five Spark jobs, the ledger, the measurement and the verdict, per wave. It is not a second
-implementation. The steps come from the same functions the command line uses, and what differs is
-only how a step becomes a running container.
+`airflow/dags/chaos_suite.py` lays the same eight arms out as 95 tasks: inject, create the
+topic, publish, the five Spark jobs, the ledger, the measurement and the verdict, per wave, and the
+late arrival has two waves. It is not a second implementation. The steps come from the same
+functions the command line uses, and what differs is only how a step becomes a running container.
 
-It has been run as a whole, not only parsed: one trigger, 84 tasks, every arm reaching the same
-verdict it reaches from the command line, with the same tests failing on the same rows.
+It has been run as a whole, not only parsed: one trigger at `N=1000`, 95 tasks, every one of them
+successful and every arm judged `as described`. Getting there found one thing the command line
+cannot: the operator hands over a container's output in the pieces it arrived in, and the report
+line once arrived in two, so the verdict read half a report. The job now writes that line in a
+single piece, and a report that arrives cut is refused where it is read.
 
 Scheduling is not what it is for. One machine runs one Spark job at a time and nothing here runs on
 a clock. What the DAG has is a task boundary around every step, so a suite that goes wrong says
@@ -480,7 +488,7 @@ One `N=1000` run produces 37 KB:
 | `daily_close.json` | 62 | what the books say that day closed at, and what moved |
 | `reconciliation.json` | 62 | the ledger weighed against the balance the processor reports |
 | `findings.json` | 0 | coverage gaps and restatements, empty when the inputs agreed |
-| `chaos.json` | 7 | the six failures injected on purpose, and what fired |
+| `chaos.json` | 8 | the seven failures injected on purpose, and what fired |
 
 **It refuses rather than warns.** A trial balance that does not sum to zero, a day the
 reconciliation cannot explain, a float where money should be, a day written as a timestamp rather
@@ -526,7 +534,7 @@ specific secret, or `CAPTURE_SPAWN_LISTEN=0` to run the listener yourself.
 
 Each event lands at `fixtures/events/<type>/<event_id>.json`, so a redelivery of the same event
 overwrites its own file rather than creating a second one. The receiver logs a redelivery when it
-sees one, which is worth watching: it is the first of the six failures showing up on its own,
+sees one, which is worth watching: it is the first of the seven failures showing up on its own,
 before anything is injected on purpose.
 
 `make trigger` walks what the CLI can actually produce: `charge.succeeded`, `charge.refunded`,
@@ -556,7 +564,7 @@ src/payment_ledger/
   redact.py        what may be committed: the live-mode guard and the redaction rules
   producer.py      fixtures or a generated run, onto the kafka topic
   generator.py     simulated volume, replayed from the captured shapes
-  chaos.py         the six failures as inputs, and the verdict on a run that met one
+  chaos.py         the seven failures as inputs, and the verdict on a run that met one
   chaos_run.py     each scenario through the pipeline, into a lakehouse of its own
   export.py        the artifacts a dashboard reads, and every promise they have to keep
 scripts/
@@ -572,7 +580,7 @@ jobs/
   export_tables.py             the gold tables out of the lakehouse, as plain rows
 conf/              spark defaults, iceberg catalog wiring, log4j
 dbt/               gold ledger models and the invariant tests   (phase 3)
-airflow/dags/      chaos_suite, the same seven arms as a DAG    (phase 5)
+airflow/dags/      chaos_suite, the same eight arms as a DAG    (phase 5)
 fixtures/events/   captured test-mode payloads, redacted and committed
 data/generated/    what a run writes; reproducible from its seed, so never committed
 data/chaos/        what each scenario was given, and the verdict on what came back

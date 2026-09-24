@@ -339,8 +339,8 @@ has to be a run in which nothing was injected. An arm that shared a run with an 
 measured against a yardstick that had itself been bent.
 
 The cost follows from this and is worth stating plainly, because it is the only reason the suite
-and the ledger are ever run at different sizes: six failures cost seven complete pipelines, not
-one. The suite therefore runs at whatever size is affordable seven times over, the export records
+and the ledger are ever run at different sizes: seven failures cost eight complete pipelines, not
+one. The suite therefore runs at whatever size is affordable eight times over, the export records
 the suite's run and the ledger's separately, and a page reading both is expected to say so when
 they differ.
 
@@ -363,7 +363,7 @@ catalog and a difference of nine rows is a query rather than a claim. The one th
 the whole exercise worthless is an arm reading another arm's tables, so that is a test rather than
 a habit.
 
-**Two of the six are not caught by an invariant, and that is the finding.** A dropped webhook does
+**Two of the seven are not caught by an invariant, and that is the finding.** A dropped webhook does
 not move a cent: the ledger posts from the balance transaction list, so every entry balances and
 the day reconciles exactly. What is missing is the business's record of what the money was for, and
 only a comparison between the two inputs can see it. That comparison is `gold.coverage_gaps`, which
