@@ -101,6 +101,10 @@ class TolerantDockerOperator(DockerOperator):
     Four of the six scenarios exist to make an invariant fail, so `dbt build` coming back non-zero
     is what a working chaos suite looks like. The verdict is read from the build's own artifact,
     and a task that failed the run here would stop the suite from ever reaching it.
+
+    It also swallows a build that never started, which the operator cannot tell apart from one that
+    failed tests. That case is caught one step later instead: the record was removed before the
+    build, so the verdict finds none and stops.
     """
 
     def execute(self, context):
@@ -145,6 +149,10 @@ def topic(scenario: str, **_) -> None:
 
 
 def publish(scenario: str, wave: str, **_) -> None:
+    # Every wave ends in a build, and this is the one task of the wave that runs in Python, ahead
+    # of that build, so it is where the previous build's record goes. A build that then fails to
+    # start leaves no record behind, and the verdict stops on that instead of judging an old one.
+    chaos_run.forget_run_results()
     chaos_run.publish(scenario, chaos_dir(scenario) / wave / "events.jsonl")
 
 
@@ -155,7 +163,7 @@ def judge(scenario: str, **_) -> None:
     deliberately the only one that can. Everything before it is plumbing.
     """
     out = chaos_dir(scenario)
-    chaos_run.keep_run_results(out)
+    chaos_run.keep_run_results(out, scenario)
 
     from airflow.operators.python import get_current_context
 

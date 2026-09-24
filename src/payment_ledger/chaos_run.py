@@ -62,6 +62,8 @@ class Step:
     # The service's own entrypoint is what runs a job. A reset runs a shell instead, because what
     # it removes is files and catalog entries rather than anything the pipeline does.
     entrypoint: str | None = None
+    # dbt's own contract: 1 is a build that ran and found failures, 2 is a build that never got
+    # going (no connection, a broken profile, a compile error). Only the first is an outcome.
     tolerate: bool = False
     capture: bool = False
 
@@ -180,7 +182,7 @@ def run(step: Step) -> str:
     )
     if step.capture:
         print(result.stdout)
-    if result.returncode != 0 and not step.tolerate:
+    if result.returncode != 0 and not (step.tolerate and result.returncode == 1):
         raise SystemExit(f"{step.label} failed with {result.returncode}")
     return result.stdout or ""
 
@@ -202,9 +204,10 @@ def arm(scenario: str, out: Path, seed: int, source: Path) -> int:
         publish(scenario, out / wave / "events.jsonl")
         for step in wave_steps(scenario, wave):
             run(step)
+        forget_run_results()
         run(dbt_step(scenario))
 
-    keep_run_results(out)
+    keep_run_results(out, scenario)
     keep_report(run(report_step(scenario)), out)
     return verdict(scenario, out)
 
@@ -229,9 +232,39 @@ def create_topic(scenario: str) -> None:
     admin.create_topics([NewTopic(name, num_partitions=6, replication_factor=1)])[name].result(60)
 
 
-def keep_run_results(out: Path) -> None:
-    """dbt overwrites its artifact on every build, so the arm keeps a copy of its own."""
-    shutil.copy(config.REPO_ROOT / "dbt" / "target" / "run_results.json", out / "run_results.json")
+RUN_RESULTS = config.REPO_ROOT / "dbt" / "target" / "run_results.json"
+
+
+def forget_run_results() -> None:
+    """The last build's record, gone before the next build starts.
+
+    dbt overwrites its artifact when it runs and leaves it alone when it does not. A build that
+    never connected used to leave the previous one's record in place, and the verdict then judged a
+    build that was not this arm's: red, on tests this scenario never touched. With the file gone, a
+    build that did not run leaves nothing, and nothing is something the verdict refuses.
+    """
+    RUN_RESULTS.unlink(missing_ok=True)
+
+
+def keep_run_results(out: Path, scenario: str) -> None:
+    """dbt overwrites its artifact on every build, so the arm keeps a copy of its own.
+
+    Only once it is known to be this arm's. The build reads the arm's silver through a project
+    variable, and dbt records the variables it was given, so a record whose `silver_schema` names
+    another arm is another arm's build.
+    """
+    if not RUN_RESULTS.exists():
+        raise SystemExit(
+            f"dbt wrote no run_results.json for {scenario}, so its last build never ran. "
+            "There is nothing to judge, and judging an older record would be worse than nothing."
+        )
+    record = json.loads(RUN_RESULTS.read_text(encoding="utf-8"))
+    read = (record.get("args") or {}).get("vars", {}).get("silver_schema")
+    if read != f"{scenario}_silver":
+        raise SystemExit(
+            f"run_results.json is the record of a build that read {read}, not {scenario}_silver."
+        )
+    shutil.copy(RUN_RESULTS, out / "run_results.json")
 
 
 def keep_report(output: str, out: Path) -> None:

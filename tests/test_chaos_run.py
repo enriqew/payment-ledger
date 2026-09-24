@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import re
 
+import pytest
+
 from payment_ledger import chaos, chaos_run
 from payment_ledger.config import REPO_ROOT
 
@@ -177,3 +179,120 @@ def test_every_arm_is_cleared_including_the_control_one():
 
     assert "clear(scenario, args.out)" in loop, "a reset here would take the finding with it"
     assert 'scenario != "baseline"' not in loop, "the control arm is cleared like any other"
+
+
+# --- the record a verdict is read from ------------------------------------------------------------
+
+
+def run_results(scenario: str, failures: dict[str, int]) -> str:
+    """A dbt artifact in the shape the verdict reads: the variables the build got, and its tests."""
+    return json.dumps(
+        {
+            "args": {"vars": {"silver_schema": f"{scenario}_silver"}},
+            "results": [
+                {"unique_id": f"test.payment_ledger.{name}", "status": "fail", "failures": rows}
+                for name, rows in failures.items()
+            ],
+        }
+    )
+
+
+def test_a_build_that_never_ran_leaves_the_arm_nothing_to_judge(tmp_path, monkeypatch):
+    """What happened on 2026-09-24. The catalog had lost its `default` namespace, dbt could not
+    connect, and the arm was judged on the record an earlier build had left in `dbt/target`: red,
+    on two tests that scenario never touches. The record is forgotten before the build now, so a
+    build that did not run leaves nothing, and the arm stops on that."""
+    target = tmp_path / "run_results.json"
+    target.write_text(run_results(SCENARIO, {"assert_entries_balance": 43}), encoding="utf-8")
+    monkeypatch.setattr(chaos_run, "RUN_RESULTS", target)
+    out = tmp_path / SCENARIO
+    out.mkdir()
+
+    chaos_run.forget_run_results()
+
+    with pytest.raises(SystemExit, match="never ran"):
+        chaos_run.keep_run_results(out, SCENARIO)
+    assert not (out / "run_results.json").exists()
+
+
+def test_another_arms_build_is_not_this_arms_record(tmp_path, monkeypatch):
+    target = tmp_path / "run_results.json"
+    target.write_text(run_results("reversal_dropped", {}), encoding="utf-8")
+    monkeypatch.setattr(chaos_run, "RUN_RESULTS", target)
+    out = tmp_path / SCENARIO
+    out.mkdir()
+
+    with pytest.raises(SystemExit, match="reversal_dropped_silver"):
+        chaos_run.keep_run_results(out, SCENARIO)
+
+
+def test_this_arms_build_is_kept(tmp_path, monkeypatch):
+    target = tmp_path / "run_results.json"
+    target.write_text(run_results(SCENARIO, {"assert_the_stream_saw_every_source": 9}), "utf-8")
+    monkeypatch.setattr(chaos_run, "RUN_RESULTS", target)
+    out = tmp_path / SCENARIO
+    out.mkdir()
+
+    chaos_run.keep_run_results(out, SCENARIO)
+
+    assert chaos.dbt_failures(out / "run_results.json") == {"assert_the_stream_saw_every_source": 9}
+
+
+def test_every_build_of_an_arm_starts_without_the_last_ones_record(tmp_path, monkeypatch):
+    """Per build rather than per arm. A late arrival builds twice, and a second build that fails to
+    start would otherwise leave the first one's record to be judged as the arm's final state."""
+    target = tmp_path / "run_results.json"
+    monkeypatch.setattr(chaos_run, "RUN_RESULTS", target)
+    out = tmp_path / "late_arrival"
+    out.mkdir()
+    monkeypatch.setattr(
+        chaos, "build", lambda scenario, source, out, seed: {"injected": {}, "waves": [1, 2]}
+    )
+    monkeypatch.setattr(chaos_run, "create_topic", lambda scenario: None)
+    monkeypatch.setattr(chaos_run, "publish", lambda scenario, events: None)
+
+    builds = []
+
+    def run(step):
+        if step.service == "dbt":
+            builds.append(target.exists())
+            # The first build runs and writes its record; the second never starts.
+            if len(builds) == 1:
+                target.write_text(run_results("late_arrival", {}), encoding="utf-8")
+        return ""
+
+    monkeypatch.setattr(chaos_run, "run", run)
+
+    with pytest.raises(SystemExit, match="never ran"):
+        chaos_run.arm("late_arrival", out, 1, tmp_path)
+    assert builds == [False, False]
+
+
+def test_a_build_that_did_not_start_stops_the_arm(monkeypatch):
+    """dbt exits 1 when the build ran and tests failed, which four of the arms are for, and 2 when
+    it never got going. Only the first is an outcome."""
+
+    class Done:
+        def __init__(self, returncode):
+            self.returncode = returncode
+            self.stdout = ""
+
+    step = chaos_run.dbt_step(SCENARIO)
+
+    monkeypatch.setattr(chaos_run.subprocess, "run", lambda *a, **k: Done(1))
+    chaos_run.run(step)
+
+    monkeypatch.setattr(chaos_run.subprocess, "run", lambda *a, **k: Done(2))
+    with pytest.raises(SystemExit, match="failed with 2"):
+        chaos_run.run(step)
+
+
+def test_the_dag_forgets_the_record_before_each_build():
+    """The DAG runs the same functions, but its build is a container the scheduler starts, and the
+    operator that tolerates a failing build cannot tell one from a build that never started. The
+    record has to be gone before every wave for the verdict to see the difference."""
+    dag = (REPO_ROOT / "airflow" / "dags" / "chaos_suite.py").read_text(encoding="utf-8")
+    publish = dag[dag.index("def publish(") : dag.index("def judge(")]
+
+    assert "chaos_run.forget_run_results()" in publish
+    assert "chaos_run.keep_run_results(out, scenario)" in dag
