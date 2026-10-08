@@ -30,7 +30,7 @@ Full design: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Status
 
-**Phase 6 of 7.** A run of any size goes end to end and comes out as a double-entry ledger that has
+**All seven phases are done.** A run of any size goes end to end and comes out as a double-entry ledger that has
 been weighed against the processor's own reported balance: the generator simulates N transactions
 from the captured shapes, the producer puts them on Kafka, Spark Structured Streaming lands every
 delivery in `bronze.events`, silver deduplicates that into one row per event and one per charge,
@@ -38,9 +38,8 @@ refund and dispute, and dbt builds the postings, the trial balance, the daily cl
 reconciliation, with all four invariants as tests that stop the build. The seven failures in the
 table above are injected on purpose, one namespace per scenario, and each is checked against what
 it said it would do: `make chaos`. What a dashboard may read, and what the export refuses to
-publish, is `make export` and [`docs/EXPORT.md`](docs/EXPORT.md). What is left is the write-up. The
-roadmap is at the bottom of `docs/DESIGN.md`, and this line is updated as phases land rather than
-in advance.
+publish, is `make export` and [`docs/EXPORT.md`](docs/EXPORT.md). The write-up, with a dashboard
+built from this repository's export, is the [project page](https://eredonda.com/projects/payment-ledger?utm_source=github&utm_medium=referral&utm_campaign=payment-ledger-repo).
 
 ## Stack
 

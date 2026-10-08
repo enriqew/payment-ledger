@@ -440,7 +440,7 @@ came out of a measured run, with that run's configuration beside it.
 | 4 | Reconciliation against the processor balance | done |
 | 5 | Chaos suite, one Airflow DAG, one Iceberg namespace per scenario | done |
 | 6 | Export contract and the artifacts a dashboard reads | done |
-| 7 | Write-up | **next** |
+| 7 | Write-up | done: [project page](https://eredonda.com/projects/payment-ledger?utm_source=github&utm_medium=referral&utm_campaign=payment-ledger-repo) |
 
 The export contract is its own document, [`EXPORT.md`](EXPORT.md), because it is the one thing here
 read by somebody who is not working on the pipeline. Two properties of it are design decisions
